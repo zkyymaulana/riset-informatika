@@ -7,8 +7,25 @@ import {
   getGlobalTickerPrice,
   getGlobalTickerTime,
 } from "./data.js";
-import { SMA, RSI, EMA } from "./indicators.js";
-import { generateMASignals, generateRSISignals } from "./signals.js";
+import {
+  SMA,
+  RSI,
+  EMA,
+  StochasticOscillator,
+  StochasticRSI,
+  MACD,
+  BollingerBands,
+  ParabolicSAR,
+} from "./indicators.js";
+import {
+  generateMASignals,
+  generateRSISignals,
+  generateStochasticSignals,
+  generateStochasticRSISignals,
+  generateMACDSignals,
+  generateBollingerBandsSignals,
+  generateParabolicSARSignals,
+} from "./signals.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocketServer } from "ws";
@@ -176,12 +193,25 @@ async function loadDataForTimeframe(timeframe) {
       return null;
     }
 
+    // Extract data arrays untuk perhitungan indikator
     const closes = candles.map((d) => d.close);
+    const highs = candles.map((d) => d.high);
+    const lows = candles.map((d) => d.low);
+
+    // Hitung indikator tradisional
     const sma5 = SMA(closes, 5);
     const sma20 = SMA(closes, 20);
     const ema20 = EMA(closes, 20);
     const rsi14 = RSI(closes, 14);
 
+    // Hitung indikator baru
+    const stochastic = StochasticOscillator(highs, lows, closes, 14, 3);
+    const stochRSI = StochasticRSI(closes, 14, 14);
+    const macd = MACD(closes, 12, 26, 9);
+    const bollinger = BollingerBands(closes, 20, 2);
+    const psar = ParabolicSAR(highs, lows, closes, 0.02, 0.2);
+
+    // Proses data dengan semua indikator
     const processedData = candles.map((c, i) => ({
       time: c.time,
       open: c.open,
@@ -189,10 +219,22 @@ async function loadDataForTimeframe(timeframe) {
       low: c.low,
       close: c.close,
       volume: c.volume,
+      // Indikator lama
       sma5: sma5[i],
       sma20: sma20[i],
       ema20: ema20[i],
       rsi: rsi14[i],
+      // Indikator baru
+      stochK: stochastic.k[i],
+      stochD: stochastic.d[i],
+      stochRSI: stochRSI[i],
+      macdLine: macd.macd[i],
+      macdSignal: macd.signal[i],
+      macdHistogram: macd.histogram[i],
+      bbUpper: bollinger.upper[i],
+      bbMiddle: bollinger.middle[i],
+      bbLower: bollinger.lower[i],
+      psar: psar[i],
     }));
 
     dataCache[timeframe] = processedData;
@@ -308,7 +350,7 @@ app.get("/api/candles", async (req, res) => {
     const finalGlobalTime = tickerTime || globalLastTime;
     const finalGlobalPrice = tickerPrice || globalLastPrice;
 
-    // Struktur response dengan globalLastTime
+    // Struktur response dengan semua indikator baru
     res.json({
       success: true,
       symbol: "BTCUSDT",
@@ -324,6 +366,7 @@ app.get("/api/candles", async (req, res) => {
       globalLastPrice: finalGlobalPrice,
       candles: syncedData,
       indicators: {
+        // Indikator lama
         sma5: syncedData
           .map((d, i) => ({ time: d.time, value: d.sma5 }))
           .filter((item) => item.value !== null && item.value !== undefined),
@@ -335,6 +378,46 @@ app.get("/api/candles", async (req, res) => {
           .filter((item) => item.value !== null && item.value !== undefined),
         rsi: syncedData
           .map((d, i) => ({ time: d.time, value: d.rsi }))
+          .filter((item) => item.value !== null && item.value !== undefined),
+
+        // Indikator baru - Stochastic Oscillator
+        stochK: syncedData
+          .map((d, i) => ({ time: d.time, value: d.stochK }))
+          .filter((item) => item.value !== null && item.value !== undefined),
+        stochD: syncedData
+          .map((d, i) => ({ time: d.time, value: d.stochD }))
+          .filter((item) => item.value !== null && item.value !== undefined),
+
+        // Stochastic RSI
+        stochRSI: syncedData
+          .map((d, i) => ({ time: d.time, value: d.stochRSI }))
+          .filter((item) => item.value !== null && item.value !== undefined),
+
+        // MACD
+        macdLine: syncedData
+          .map((d, i) => ({ time: d.time, value: d.macdLine }))
+          .filter((item) => item.value !== null && item.value !== undefined),
+        macdSignal: syncedData
+          .map((d, i) => ({ time: d.time, value: d.macdSignal }))
+          .filter((item) => item.value !== null && item.value !== undefined),
+        macdHistogram: syncedData
+          .map((d, i) => ({ time: d.time, value: d.macdHistogram }))
+          .filter((item) => item.value !== null && item.value !== undefined),
+
+        // Bollinger Bands
+        bbUpper: syncedData
+          .map((d, i) => ({ time: d.time, value: d.bbUpper }))
+          .filter((item) => item.value !== null && item.value !== undefined),
+        bbMiddle: syncedData
+          .map((d, i) => ({ time: d.time, value: d.bbMiddle }))
+          .filter((item) => item.value !== null && item.value !== undefined),
+        bbLower: syncedData
+          .map((d, i) => ({ time: d.time, value: d.bbLower }))
+          .filter((item) => item.value !== null && item.value !== undefined),
+
+        // Parabolic SAR
+        psar: syncedData
+          .map((d, i) => ({ time: d.time, value: d.psar }))
           .filter((item) => item.value !== null && item.value !== undefined),
       },
       count: syncedData.length,

@@ -244,8 +244,13 @@
             <button class="btn active" data-indicator="none">None</button>
             <button class="btn" data-indicator="sma5">SMA(5)</button>
             <button class="btn" data-indicator="ema20">EMA(20)</button>
-            <button class="btn" data-indicator="both">Both</button>
+            <button class="btn" data-indicator="both">MA Both</button>
             <button class="btn" data-indicator="rsi">RSI</button>
+            <button class="btn" data-indicator="stochastic">Stochastic</button>
+            <button class="btn" data-indicator="stochrsi">StochRSI</button>
+            <button class="btn" data-indicator="macd">MACD</button>
+            <button class="btn" data-indicator="bollinger">Bollinger</button>
+            <button class="btn" data-indicator="psar">PSAR</button>
             <button class="btn" data-indicator="all">All</button>
           </div>
         </div>
@@ -725,12 +730,57 @@
             this.emaSeries.setData(emaData);
           }
 
+          // Add Bollinger Bands if requested
+          if (
+            ["bollinger", "all"].includes(this.currentIndicator) &&
+            indicators.bbUpper &&
+            indicators.bbMiddle &&
+            indicators.bbLower
+          ) {
+            this.addBollingerBands(indicators);
+          }
+
+          // Add Parabolic SAR if requested
+          if (
+            ["psar", "all"].includes(this.currentIndicator) &&
+            indicators.psar
+          ) {
+            this.addParabolicSAR(indicators.psar);
+          }
+
           // Add RSI if requested
           if (
             ["rsi", "all"].includes(this.currentIndicator) &&
             indicators.rsi
           ) {
             this.addRSISeries(indicators.rsi);
+          }
+
+          // Add Stochastic Oscillator if requested
+          if (
+            ["stochastic", "all"].includes(this.currentIndicator) &&
+            indicators.stochK &&
+            indicators.stochD
+          ) {
+            this.addStochasticSeries(indicators.stochK, indicators.stochD);
+          }
+
+          // Add Stochastic RSI if requested
+          if (
+            ["stochrsi", "all"].includes(this.currentIndicator) &&
+            indicators.stochRSI
+          ) {
+            this.addStochasticRSISeries(indicators.stochRSI);
+          }
+
+          // Add MACD if requested
+          if (
+            ["macd", "all"].includes(this.currentIndicator) &&
+            indicators.macdLine &&
+            indicators.macdSignal &&
+            indicators.macdHistogram
+          ) {
+            this.addMACDSeries(indicators);
           }
         }
 
@@ -795,6 +845,26 @@
             this.emaSeries = null;
           }
 
+          // Remove Bollinger Bands
+          if (this.bbUpperSeries) {
+            this.candlestickChart.removeSeries(this.bbUpperSeries);
+            this.bbUpperSeries = null;
+          }
+          if (this.bbMiddleSeries) {
+            this.candlestickChart.removeSeries(this.bbMiddleSeries);
+            this.bbMiddleSeries = null;
+          }
+          if (this.bbLowerSeries) {
+            this.candlestickChart.removeSeries(this.bbLowerSeries);
+            this.bbLowerSeries = null;
+          }
+
+          // Remove Parabolic SAR
+          if (this.psarSeries) {
+            this.candlestickChart.removeSeries(this.psarSeries);
+            this.psarSeries = null;
+          }
+
           // Remove RSI series
           if (this.rsiSeries) {
             this.rsiChart.removeSeries(this.rsiSeries);
@@ -808,10 +878,62 @@
             this.rsiChart.removeSeries(this.rsiOversoldLine);
             this.rsiOversoldLine = null;
           }
+
+          // Remove Stochastic Oscillator
+          if (this.stochKSeries) {
+            this.rsiChart.removeSeries(this.stochKSeries);
+            this.stochKSeries = null;
+          }
+          if (this.stochDSeries) {
+            this.rsiChart.removeSeries(this.stochDSeries);
+            this.stochDSeries = null;
+          }
+          if (this.stochOverboughtLine) {
+            this.rsiChart.removeSeries(this.stochOverboughtLine);
+            this.stochOverboughtLine = null;
+          }
+          if (this.stochOversoldLine) {
+            this.rsiChart.removeSeries(this.stochOversoldLine);
+            this.stochOversoldLine = null;
+          }
+
+          // Remove Stochastic RSI
+          if (this.stochRSISeries) {
+            this.rsiChart.removeSeries(this.stochRSISeries);
+            this.stochRSISeries = null;
+          }
+          if (this.stochRSIOverboughtLine) {
+            this.rsiChart.removeSeries(this.stochRSIOverboughtLine);
+            this.stochRSIOverboughtLine = null;
+          }
+          if (this.stochRSIOversoldLine) {
+            this.rsiChart.removeSeries(this.stochRSIOversoldLine);
+            this.stochRSIOversoldLine = null;
+          }
+
+          // Remove MACD
+          if (this.macdLineSeries) {
+            this.rsiChart.removeSeries(this.macdLineSeries);
+            this.macdLineSeries = null;
+          }
+          if (this.macdSignalSeries) {
+            this.rsiChart.removeSeries(this.macdSignalSeries);
+            this.macdSignalSeries = null;
+          }
+          if (this.macdHistogramSeries) {
+            this.rsiChart.removeSeries(this.macdHistogramSeries);
+            this.macdHistogramSeries = null;
+          }
+          if (this.macdZeroLine) {
+            this.rsiChart.removeSeries(this.macdZeroLine);
+            this.macdZeroLine = null;
+          }
         }
 
         isRSIVisible() {
-          return ["rsi", "all"].includes(this.currentIndicator);
+          return ["rsi", "stochastic", "stochrsi", "macd", "all"].includes(
+            this.currentIndicator
+          );
         }
 
         toggleRSIChart() {
@@ -1005,6 +1127,275 @@
           statusText.textContent = text;
           statusDot.classList.toggle("disconnected", !connected);
         }
+
+        // Method untuk menambahkan Bollinger Bands
+        addBollingerBands(indicators) {
+          // Upper Band
+          this.bbUpperSeries = this.candlestickChart.addLineSeries({
+            color: "#f44336",
+            lineWidth: 1,
+            title: "BB Upper",
+          });
+
+          // Middle Band (SMA)
+          this.bbMiddleSeries = this.candlestickChart.addLineSeries({
+            color: "#2196F3",
+            lineWidth: 2,
+            title: "BB Middle",
+          });
+
+          // Lower Band
+          this.bbLowerSeries = this.candlestickChart.addLineSeries({
+            color: "#4caf50",
+            lineWidth: 1,
+            title: "BB Lower",
+          });
+
+          // Process data untuk setiap band
+          const upperData = indicators.bbUpper
+            .filter(
+              (point) => point.value !== null && point.value !== undefined
+            )
+            .map((point) => ({
+              time: Number(point.time),
+              value: parseFloat(point.value),
+            }));
+
+          const middleData = indicators.bbMiddle
+            .filter(
+              (point) => point.value !== null && point.value !== undefined
+            )
+            .map((point) => ({
+              time: Number(point.time),
+              value: parseFloat(point.value),
+            }));
+
+          const lowerData = indicators.bbLower
+            .filter(
+              (point) => point.value !== null && point.value !== undefined
+            )
+            .map((point) => ({
+              time: Number(point.time),
+              value: parseFloat(point.value),
+            }));
+
+          // Set data untuk semua band
+          this.bbUpperSeries.setData(upperData);
+          this.bbMiddleSeries.setData(middleData);
+          this.bbLowerSeries.setData(lowerData);
+        }
+
+        // Method untuk menambahkan Parabolic SAR
+        addParabolicSAR(psarData) {
+          this.psarSeries = this.candlestickChart.addLineSeries({
+            color: "#ff9800",
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dotted,
+            title: "Parabolic SAR",
+            crosshairMarkerVisible: true,
+          });
+
+          const processedData = psarData
+            .filter(
+              (point) => point.value !== null && point.value !== undefined
+            )
+            .map((point) => ({
+              time: Number(point.time),
+              value: parseFloat(point.value),
+            }));
+
+          this.psarSeries.setData(processedData);
+        }
+
+        // Method untuk menambahkan Stochastic Oscillator
+        addStochasticSeries(stochKData, stochDData) {
+          // %K line
+          this.stochKSeries = this.rsiChart.addLineSeries({
+            color: "#2196F3",
+            lineWidth: 2,
+            title: "Stoch %K",
+          });
+
+          // %D line
+          this.stochDSeries = this.rsiChart.addLineSeries({
+            color: "#ff9800",
+            lineWidth: 2,
+            title: "Stoch %D",
+          });
+
+          // Reference lines untuk overbought/oversold
+          this.stochOverboughtLine = this.rsiChart.addLineSeries({
+            color: "#f44336",
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            title: "Overbought (80)",
+          });
+
+          this.stochOversoldLine = this.rsiChart.addLineSeries({
+            color: "#4caf50",
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            title: "Oversold (20)",
+          });
+
+          // Process data
+          const kData = stochKData
+            .filter(
+              (point) => point.value !== null && point.value !== undefined
+            )
+            .map((point) => ({
+              time: Number(point.time),
+              value: parseFloat(point.value),
+            }));
+
+          const dData = stochDData
+            .filter(
+              (point) => point.value !== null && point.value !== undefined
+            )
+            .map((point) => ({
+              time: Number(point.time),
+              value: parseFloat(point.value),
+            }));
+
+          // Create reference lines data
+          const overboughtData = kData.map((point) => ({
+            time: point.time,
+            value: 80,
+          }));
+
+          const oversoldData = kData.map((point) => ({
+            time: point.time,
+            value: 20,
+          }));
+
+          // Set data
+          this.stochKSeries.setData(kData);
+          this.stochDSeries.setData(dData);
+          this.stochOverboughtLine.setData(overboughtData);
+          this.stochOversoldLine.setData(oversoldData);
+        }
+
+        // Method untuk menambahkan Stochastic RSI
+        addStochasticRSISeries(stochRSIData) {
+          this.stochRSISeries = this.rsiChart.addLineSeries({
+            color: "#9c27b0",
+            lineWidth: 2,
+            title: "Stochastic RSI",
+          });
+
+          // Reference lines
+          this.stochRSIOverboughtLine = this.rsiChart.addLineSeries({
+            color: "#f44336",
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            title: "Overbought (80)",
+          });
+
+          this.stochRSIOversoldLine = this.rsiChart.addLineSeries({
+            color: "#4caf50",
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            title: "Oversold (20)",
+          });
+
+          // Process data
+          const processedData = stochRSIData
+            .filter(
+              (point) => point.value !== null && point.value !== undefined
+            )
+            .map((point) => ({
+              time: Number(point.time),
+              value: parseFloat(point.value),
+            }));
+
+          // Reference lines data
+          const overboughtData = processedData.map((point) => ({
+            time: point.time,
+            value: 80,
+          }));
+
+          const oversoldData = processedData.map((point) => ({
+            time: point.time,
+            value: 20,
+          }));
+
+          // Set data
+          this.stochRSISeries.setData(processedData);
+          this.stochRSIOverboughtLine.setData(overboughtData);
+          this.stochRSIOversoldLine.setData(oversoldData);
+        }
+
+        // Method untuk menambahkan MACD
+        addMACDSeries(indicators) {
+          // MACD Line
+          this.macdLineSeries = this.rsiChart.addLineSeries({
+            color: "#2196F3",
+            lineWidth: 2,
+            title: "MACD",
+          });
+
+          // Signal Line
+          this.macdSignalSeries = this.rsiChart.addLineSeries({
+            color: "#ff9800",
+            lineWidth: 2,
+            title: "Signal",
+          });
+
+          // Histogram - menggunakan area series untuk visualisasi yang lebih baik
+          this.macdHistogramSeries = this.rsiChart.addHistogramSeries({
+            color: "#9c27b0",
+            title: "Histogram",
+          });
+
+          // Zero line
+          this.macdZeroLine = this.rsiChart.addLineSeries({
+            color: "#666666",
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            title: "Zero Line",
+          });
+
+          // Process data
+          const macdData = indicators.macdLine
+            .filter(
+              (point) => point.value !== null && point.value !== undefined
+            )
+            .map((point) => ({
+              time: Number(point.time),
+              value: parseFloat(point.value),
+            }));
+
+          const signalData = indicators.macdSignal
+            .filter(
+              (point) => point.value !== null && point.value !== undefined
+            )
+            .map((point) => ({
+              time: Number(point.time),
+              value: parseFloat(point.value),
+            }));
+
+          const histogramData = indicators.macdHistogram
+            .filter(
+              (point) => point.value !== null && point.value !== undefined
+            )
+            .map((point) => ({
+              time: Number(point.time),
+              value: parseFloat(point.value),
+              color: parseFloat(point.value) >= 0 ? "#26a69a" : "#ef5350",
+            }));
+
+          // Zero line data
+          const zeroLineData = macdData.map((point) => ({
+            time: point.time,
+            value: 0,
+          }));
+
+          // Set data
+          this.macdLineSeries.setData(macdData);
+          this.macdSignalSeries.setData(signalData);
+          this.macdHistogramSeries.setData(histogramData);
+          this.macdZeroLine.setData(zeroLineData);
+        }
       }
 
       // Initialize the chart when page loads
@@ -1014,4 +1405,3 @@
     </script>
   </body>
 </html>
-```
