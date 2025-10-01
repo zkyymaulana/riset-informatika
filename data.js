@@ -69,49 +69,182 @@ export async function getHistorical(symbol, interval, startTime, endTime) {
   return allCandles;
 }
 
-// WebSocket untuk realtime
+// Global state for managing realtime data
+let globalTickerPrice = null;
+let globalTickerTime = null;
+const activeConnections = new Map(); // Map<timeframe, WebSocket>
+const candleCallbacks = new Map(); // Map<timeframe, callback>
+
+// WebSocket untuk realtime dengan ticker stream
 export function connectWebSocket(
   symbol = "btcusdt",
   interval = "1m",
   onMessage
 ) {
-  const ws = new WebSocket(
+  const connectionKey = `${symbol}_${interval}`;
+
+  // Close existing connection for this timeframe if any
+  if (activeConnections.has(connectionKey)) {
+    const existingWs = activeConnections.get(connectionKey);
+    existingWs.close();
+    activeConnections.delete(connectionKey);
+  }
+
+  // Store callback for this timeframe
+  candleCallbacks.set(connectionKey, onMessage);
+
+  // Create kline WebSocket connection
+  const klineWs = new WebSocket(
     `wss://stream.binance.com:9443/ws/${symbol}@kline_${interval}`
   );
 
-  ws.on("message", (msg) => {
-    const data = JSON.parse(msg);
-    if (data.k && data.k.x) {
-      // Binance sends completed kline data when x is true
-      const kline = data.k;
-      const candleData = {
-        time: kline.t, // Keep in milliseconds
-        open: parseFloat(kline.o),
-        high: parseFloat(kline.h),
-        low: parseFloat(kline.l),
-        close: parseFloat(kline.c),
-        volume: parseFloat(kline.v),
-      };
+  activeConnections.set(connectionKey, klineWs);
 
-      onMessage(candleData);
+  klineWs.on("message", (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      if (data.k) {
+        const kline = data.k;
+        const candleData = {
+          time: Math.floor(kline.t / 1000), // Convert to seconds
+          open: parseFloat(kline.o),
+          high: parseFloat(kline.h),
+          low: parseFloat(kline.l),
+          close: parseFloat(kline.c),
+          volume: parseFloat(kline.v),
+          isClosed: kline.x, // true when candle is closed/final
+          isRealtime: true,
+        };
+
+        // For TradingView-like behavior: always update with latest ticker price if available
+        if (globalTickerPrice && !candleData.isClosed) {
+          // Update current candle with latest ticker price
+          candleData.close = globalTickerPrice;
+          // Update high/low if needed
+          candleData.high = Math.max(candleData.high, globalTickerPrice);
+          candleData.low = Math.min(candleData.low, globalTickerPrice);
+        }
+
+        console.log(`📊 ${symbol}@${interval} - Kline data:`, {
+          time: candleData.time,
+          close: candleData.close,
+          isClosed: candleData.isClosed,
+          tickerPrice: globalTickerPrice,
+        });
+
+        onMessage(candleData);
+      }
+    } catch (error) {
+      console.error(
+        `❌ Error parsing kline message for ${symbol}@${interval}:`,
+        error
+      );
     }
   });
 
-  ws.on("error", (error) => {
+  klineWs.on("error", (error) => {
     console.error(
-      `❌ WebSocket error for ${symbol}@${interval}:`,
+      `❌ Kline WebSocket error for ${symbol}@${interval}:`,
       error.message
     );
   });
 
-  ws.on("close", () => {
-    console.log(`🔌 WebSocket closed for ${symbol}@${interval}`);
+  klineWs.on("close", () => {
+    console.log(`🔌 Kline WebSocket closed for ${symbol}@${interval}`);
+    activeConnections.delete(connectionKey);
+
     // Auto-reconnect after 5 seconds
     setTimeout(() => {
-      console.log(`🔄 Reconnecting WebSocket for ${symbol}@${interval}`);
-      connectWebSocket(symbol, interval, onMessage);
+      if (candleCallbacks.has(connectionKey)) {
+        console.log(
+          `🔄 Reconnecting kline WebSocket for ${symbol}@${interval}`
+        );
+        connectWebSocket(symbol, interval, candleCallbacks.get(connectionKey));
+      }
     }, 5000);
   });
 
-  return ws;
+  return klineWs;
+}
+
+// Separate ticker stream connection for global price updates
+export function connectTickerStream(symbol = "btcusdt") {
+  const tickerWs = new WebSocket(
+    `wss://stream.binance.com:9443/ws/${symbol}@ticker`
+  );
+
+  tickerWs.on("message", (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      if (data.c) {
+        // 'c' is the close price in ticker stream
+        const newPrice = parseFloat(data.c);
+        const eventTime = parseInt(data.E); // Event time in ms
+
+        // Update global ticker state
+        globalTickerPrice = newPrice;
+        globalTickerTime = Math.floor(eventTime / 1000); // Convert to seconds
+
+        console.log(
+          `💰 Ticker update: ${symbol} = ${newPrice} at ${new Date(
+            eventTime
+          ).toISOString()}`
+        );
+
+        // Broadcast ticker update to all active timeframe connections
+        broadcastTickerToAllTimeframes(symbol, newPrice, globalTickerTime);
+      }
+    } catch (error) {
+      console.error(`❌ Error parsing ticker message for ${symbol}:`, error);
+    }
+  });
+
+  tickerWs.on("error", (error) => {
+    console.error(`❌ Ticker WebSocket error for ${symbol}:`, error.message);
+  });
+
+  tickerWs.on("close", () => {
+    console.log(`🔌 Ticker WebSocket closed for ${symbol}`);
+    // Auto-reconnect ticker stream
+    setTimeout(() => {
+      console.log(`🔄 Reconnecting ticker WebSocket for ${symbol}`);
+      connectTickerStream(symbol);
+    }, 5000);
+  });
+
+  return tickerWs;
+}
+
+// Helper function to broadcast ticker updates to all timeframes
+function broadcastTickerToAllTimeframes(symbol, price, time) {
+  const timeframes = ["1m", "5m", "1h", "1d"];
+
+  timeframes.forEach((interval) => {
+    const connectionKey = `${symbol}_${interval}`;
+    const callback = candleCallbacks.get(connectionKey);
+
+    if (callback) {
+      // Create a ticker update that can be used to update current candle
+      const tickerUpdate = {
+        time: time,
+        close: price,
+        isTickerUpdate: true,
+        interval: interval,
+      };
+
+      // Only call callback if we have an active connection
+      if (activeConnections.has(connectionKey)) {
+        callback(tickerUpdate);
+      }
+    }
+  });
+}
+
+// Export getter for global ticker price
+export function getGlobalTickerPrice() {
+  return globalTickerPrice;
+}
+
+export function getGlobalTickerTime() {
+  return globalTickerTime;
 }

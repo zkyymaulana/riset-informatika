@@ -1,6 +1,12 @@
 import express from "express";
 import cors from "cors";
-import { getHistorical, connectWebSocket } from "./data.js";
+import {
+  getHistorical,
+  connectWebSocket,
+  connectTickerStream,
+  getGlobalTickerPrice,
+  getGlobalTickerTime,
+} from "./data.js";
 import { SMA, RSI, EMA } from "./indicators.js";
 import { generateMASignals, generateRSISignals } from "./signals.js";
 import path from "path";
@@ -44,23 +50,91 @@ let globalLastPrice = null;
 // WebSocket clients tracking
 const wsClients = new Map(); // Map<timeframe, Set<WebSocket>>
 
-// Fungsi untuk mendapatkan global last time dari timeframe terkecil
+// Current candle tracking for each timeframe
+const currentCandles = new Map(); // Map<timeframe, candleData>
+
+// Helper function to get candle start time for timeframe
+function getCandleStartTime(timestamp, timeframe) {
+  const date = dayjs.unix(timestamp).tz("Asia/Jakarta");
+
+  switch (timeframe) {
+    case "1m":
+      return date.startOf("minute").unix();
+    case "5m":
+      return date
+        .startOf("minute")
+        .subtract(date.minute() % 5, "minute")
+        .unix();
+    case "1h":
+      return date.startOf("hour").unix();
+    case "1d":
+      return date.startOf("day").unix();
+    default:
+      return timestamp;
+  }
+}
+
+// Helper function to get next candle start time
+function getNextCandleStartTime(timestamp, timeframe) {
+  const date = dayjs.unix(timestamp).tz("Asia/Jakarta");
+
+  switch (timeframe) {
+    case "1m":
+      return date.add(1, "minute").startOf("minute").unix();
+    case "5m":
+      const currentMinute = date.minute();
+      const nextFiveMinute = Math.ceil((currentMinute + 1) / 5) * 5;
+      return date.minute(nextFiveMinute).startOf("minute").unix();
+    case "1h":
+      return date.add(1, "hour").startOf("hour").unix();
+    case "1d":
+      return date.add(1, "day").startOf("day").unix();
+    default:
+      return timestamp + 60;
+  }
+}
+
+// Fungsi untuk mendapatkan global last time dari ticker
 async function calculateGlobalLastTime() {
   try {
-    // Load 1m data untuk mendapatkan candle terakhir yang paling akurat
+    // Use ticker price and time if available
+    const tickerPrice = getGlobalTickerPrice();
+    const tickerTime = getGlobalTickerTime();
+
+    if (tickerPrice && tickerTime) {
+      globalLastTime = tickerTime;
+      globalLastPrice = tickerPrice;
+
+      const jakartaTime = dayjs
+        .unix(globalLastTime)
+        .tz("Asia/Jakarta")
+        .format("DD/MM/YYYY HH:mm:ss");
+      console.log(
+        `🌏 Global last time from ticker: ${globalLastTime} (${jakartaTime} WIB)`
+      );
+      console.log(`💰 Global last price from ticker: ${globalLastPrice}`);
+      return;
+    }
+
+    // Fallback: Load 1m data untuk mendapatkan candle terakhir
     const startTime = Date.now() - 24 * 60 * 60 * 1000; // 1 hari
     const endTime = Date.now();
-    
+
     const candles1m = await getHistorical("BTCUSDT", "1m", startTime, endTime);
-    
+
     if (candles1m && candles1m.length > 0) {
       const lastCandle = candles1m[candles1m.length - 1];
-      globalLastTime = lastCandle.time; // sudah dalam seconds
+      globalLastTime = lastCandle.time;
       globalLastPrice = lastCandle.close;
-      
-      const jakartaTime = dayjs.unix(globalLastTime).tz('Asia/Jakarta').format('DD/MM/YYYY HH:mm:ss');
-      console.log(`🌏 Global last time set: ${globalLastTime} (${jakartaTime} WIB)`);
-      console.log(`💰 Global last price: ${globalLastPrice}`);
+
+      const jakartaTime = dayjs
+        .unix(globalLastTime)
+        .tz("Asia/Jakarta")
+        .format("DD/MM/YYYY HH:mm:ss");
+      console.log(
+        `🌏 Global last time fallback: ${globalLastTime} (${jakartaTime} WIB)`
+      );
+      console.log(`💰 Global last price fallback: ${globalLastPrice}`);
     }
   } catch (error) {
     console.error("❌ Error calculating global last time:", error.message);
@@ -125,6 +199,20 @@ async function loadDataForTimeframe(timeframe) {
     }));
 
     dataCache[timeframe] = processedData;
+
+    // Initialize current candle for this timeframe
+    if (processedData.length > 0) {
+      const lastCandle = processedData[processedData.length - 1];
+      currentCandles.set(timeframe, {
+        time: lastCandle.time,
+        open: lastCandle.open,
+        high: lastCandle.high,
+        low: lastCandle.low,
+        close: lastCandle.close,
+        volume: lastCandle.volume,
+      });
+    }
+
     return processedData;
   } catch (err) {
     console.error(`❌ Error loading data for ${timeframe}:`, err.message);
@@ -134,7 +222,17 @@ async function loadDataForTimeframe(timeframe) {
 
 // Initialize dengan data 1d default
 async function init() {
-  await loadDataForTimeframe("1d");
+  console.log("🚀 Initializing server...");
+
+  // Load initial data for all timeframes
+  for (const timeframe of ["1d", "1h", "5m", "1m"]) {
+    await loadDataForTimeframe(timeframe);
+  }
+
+  // Calculate global time after loading data
+  await calculateGlobalLastTime();
+
+  console.log("✅ Server initialization complete");
 }
 
 init();
@@ -164,29 +262,54 @@ app.get("/api/candles", async (req, res) => {
       });
     }
 
-    // Sinkronisasi dengan globalLastTime
+    // Sinkronisasi dengan globalLastTime dan ticker price
     let syncedData = [...data];
     const lastCandle = syncedData[syncedData.length - 1];
-    
-    if (globalLastTime && lastCandle.time < globalLastTime) {
-      // Tambahkan candle dummy untuk sinkronisasi
-      const dummyCandle = {
-        time: globalLastTime,
-        open: globalLastPrice,
-        high: globalLastPrice,
-        low: globalLastPrice,
-        close: globalLastPrice,
-        volume: 0,
-        sma5: null,
-        sma20: null,
-        ema20: null,
-        rsi: null,
-      };
-      syncedData.push(dummyCandle);
-      
-      const jakartaTime = dayjs.unix(globalLastTime).tz('Asia/Jakarta').format('DD/MM/YYYY HH:mm:ss');
-      console.log(`🔄 ${timeframe} - Added sync candle at ${globalLastTime} (${jakartaTime} WIB)`);
+    const tickerPrice = getGlobalTickerPrice();
+    const tickerTime = getGlobalTickerTime();
+
+    // Use ticker data if available and more recent
+    if (tickerPrice && tickerTime && tickerTime >= lastCandle.time) {
+      const candleStartTime = getCandleStartTime(tickerTime, timeframe);
+
+      if (candleStartTime === lastCandle.time) {
+        // Update existing candle with ticker price
+        lastCandle.close = tickerPrice;
+        lastCandle.high = Math.max(lastCandle.high, tickerPrice);
+        lastCandle.low = Math.min(lastCandle.low, tickerPrice);
+
+        console.log(
+          `🔄 ${timeframe} - Updated last candle with ticker price: ${tickerPrice}`
+        );
+      } else if (candleStartTime > lastCandle.time) {
+        // Add new candle based on ticker
+        const newCandle = {
+          time: candleStartTime,
+          open: lastCandle.close,
+          high: tickerPrice,
+          low: tickerPrice,
+          close: tickerPrice,
+          volume: 0,
+          sma5: null,
+          sma20: null,
+          ema20: null,
+          rsi: null,
+        };
+        syncedData.push(newCandle);
+
+        const jakartaTime = dayjs
+          .unix(candleStartTime)
+          .tz("Asia/Jakarta")
+          .format("DD/MM/YYYY HH:mm:ss");
+        console.log(
+          `➕ ${timeframe} - Added new candle at ${candleStartTime} (${jakartaTime} WIB) with ticker price: ${tickerPrice}`
+        );
+      }
     }
+
+    // Update global last time to ticker time if available
+    const finalGlobalTime = tickerTime || globalLastTime;
+    const finalGlobalPrice = tickerPrice || globalLastPrice;
 
     // Struktur response dengan globalLastTime
     res.json({
@@ -194,8 +317,14 @@ app.get("/api/candles", async (req, res) => {
       symbol: "BTCUSDT",
       timeframe: timeframe,
       lastUpdated: new Date().toISOString(),
-      globalLastTime: globalLastTime,
-      globalLastTimeJakarta: globalLastTime ? dayjs.unix(globalLastTime).tz('Asia/Jakarta').format('DD/MM/YYYY HH:mm:ss') : null,
+      globalLastTime: finalGlobalTime,
+      globalLastTimeJakarta: finalGlobalTime
+        ? dayjs
+            .unix(finalGlobalTime)
+            .tz("Asia/Jakarta")
+            .format("DD/MM/YYYY HH:mm:ss")
+        : null,
+      globalLastPrice: finalGlobalPrice,
       candles: syncedData,
       indicators: {
         sma5: syncedData
@@ -339,27 +468,23 @@ function broadcastToClients(timeframe, data) {
   if (!wsClients.has(timeframe)) return;
 
   const clients = wsClients.get(timeframe);
-  
+
   // Include global time info in WebSocket message
   const messageData = {
     ...data,
-    globalLastTime: globalLastTime,
-    globalLastTimeJakarta: globalLastTime ? dayjs.unix(globalLastTime).tz('Asia/Jakarta').format('DD/MM/YYYY HH:mm:ss') : null,
-    type: 'candle_update'
+    globalLastTime: getGlobalTickerTime() || globalLastTime,
+    globalLastTimeJakarta:
+      getGlobalTickerTime() || globalLastTime
+        ? dayjs
+            .unix(getGlobalTickerTime() || globalLastTime)
+            .tz("Asia/Jakarta")
+            .format("DD/MM/YYYY HH:mm:ss")
+        : null,
+    globalLastPrice: getGlobalTickerPrice() || globalLastPrice,
+    type: "candle_update",
   };
-  
-  const message = JSON.stringify(messageData);
 
-  // Debug log untuk membandingkan candle terakhir
-  if (dataCache[timeframe] && dataCache[timeframe].length > 0) {
-    const lastCachedCandle = dataCache[timeframe][dataCache[timeframe].length - 1];
-    const jakartaTime = dayjs.unix(data.time).tz('Asia/Jakarta').format('DD/MM/YYYY HH:mm:ss');
-    console.log(`📊 ${timeframe} - Broadcasting candle:`, {
-      time: data.time,
-      close: data.close,
-      jakartaTime: jakartaTime
-    });
-  }
+  const message = JSON.stringify(messageData);
 
   clients.forEach((ws) => {
     if (ws.readyState === ws.OPEN) {
@@ -368,65 +493,138 @@ function broadcastToClients(timeframe, data) {
   });
 }
 
+// Function to handle candle updates for a specific timeframe
+function handleCandleUpdate(timeframe, candleData) {
+  if (!dataCache[timeframe]) return;
+
+  const candleStartTime = getCandleStartTime(candleData.time, timeframe);
+  const currentCandle = currentCandles.get(timeframe);
+
+  // Get ticker price for real-time updates
+  const tickerPrice = getGlobalTickerPrice();
+
+  if (currentCandle && candleStartTime === currentCandle.time) {
+    // Update existing candle
+    if (!candleData.isClosed && tickerPrice) {
+      // Use ticker price for running candle
+      currentCandle.close = tickerPrice;
+      currentCandle.high = Math.max(currentCandle.high, tickerPrice);
+      currentCandle.low = Math.min(currentCandle.low, tickerPrice);
+    } else {
+      // Use kline data for closed candle or when ticker unavailable
+      currentCandle.close = candleData.close;
+      currentCandle.high = Math.max(currentCandle.high, candleData.high);
+      currentCandle.low = Math.min(currentCandle.low, candleData.low);
+    }
+
+    console.log(
+      `🔄 ${timeframe} - Updated running candle: close=${currentCandle.close}, closed=${candleData.isClosed}`
+    );
+
+    // Broadcast the updated candle
+    broadcastToClients(timeframe, {
+      time: currentCandle.time,
+      open: currentCandle.open,
+      high: currentCandle.high,
+      low: currentCandle.low,
+      close: currentCandle.close,
+      volume: currentCandle.volume,
+      isClosed: candleData.isClosed || false,
+    });
+  } else {
+    // New candle period
+    const newCandle = {
+      time: candleStartTime,
+      open: currentCandle ? currentCandle.close : candleData.open,
+      high: tickerPrice || candleData.high,
+      low: tickerPrice || candleData.low,
+      close: tickerPrice || candleData.close,
+      volume: candleData.volume || 0,
+    };
+
+    // Update current candle tracking
+    currentCandles.set(timeframe, newCandle);
+
+    // Add to cache
+    dataCache[timeframe].push({
+      ...newCandle,
+      sma5: null,
+      sma20: null,
+      ema20: null,
+      rsi: null,
+    });
+
+    // Keep cache size reasonable
+    if (dataCache[timeframe].length > 1000) {
+      dataCache[timeframe] = dataCache[timeframe].slice(-1000);
+    }
+
+    const jakartaTime = dayjs
+      .unix(candleStartTime)
+      .tz("Asia/Jakarta")
+      .format("DD/MM/YYYY HH:mm:ss");
+    console.log(
+      `➕ ${timeframe} - New candle: ${candleStartTime} (${jakartaTime} WIB) close=${newCandle.close}`
+    );
+
+    // Broadcast the new candle
+    broadcastToClients(timeframe, {
+      ...newCandle,
+      isClosed: false,
+    });
+  }
+}
+
+// Function to handle ticker price updates
+function handleTickerUpdate(tickerData) {
+  const timeframes = ["1m", "5m", "1h", "1d"];
+
+  timeframes.forEach((timeframe) => {
+    if (!dataCache[timeframe] || !currentCandles.has(timeframe)) return;
+
+    const currentCandle = currentCandles.get(timeframe);
+    const candleStartTime = getCandleStartTime(tickerData.time, timeframe);
+
+    if (candleStartTime === currentCandle.time) {
+      // Update current running candle with ticker price
+      currentCandle.close = tickerData.close;
+      currentCandle.high = Math.max(currentCandle.high, tickerData.close);
+      currentCandle.low = Math.min(currentCandle.low, tickerData.close);
+
+      // Broadcast ticker update
+      broadcastToClients(timeframe, {
+        time: currentCandle.time,
+        open: currentCandle.open,
+        high: currentCandle.high,
+        low: currentCandle.low,
+        close: currentCandle.close,
+        volume: currentCandle.volume,
+        isClosed: false,
+        isTickerUpdate: true,
+      });
+    }
+  });
+}
+
 // Initialize realtime connections for all timeframes
 function initializeRealtimeConnections() {
   const timeframes = ["1m", "5m", "1h", "1d"];
 
+  // Start ticker stream first
+  console.log(`🔄 Starting ticker stream for BTCUSDT`);
+  connectTickerStream("btcusdt");
+
+  // Start kline streams for each timeframe
   timeframes.forEach((timeframe) => {
-    console.log(`🔄 Starting realtime connection for ${timeframe}`);
+    console.log(`🔄 Starting kline stream for ${timeframe}`);
 
     connectWebSocket("btcusdt", timeframe, (candleData) => {
-      // Pastikan timestamp dalam UNIX detik (Math.floor(time/1000))
-      const candle = {
-        time: Math.floor(candleData.time / 1000), // Konversi ms ke detik
-        open: parseFloat(candleData.open),
-        high: parseFloat(candleData.high),
-        low: parseFloat(candleData.low),
-        close: parseFloat(candleData.close),
-        volume: parseFloat(candleData.volume || 0),
-      };
-
-      // Update global last time jika ini candle terbaru
-      if (!globalLastTime || candle.time > globalLastTime) {
-        globalLastTime = candle.time;
-        globalLastPrice = candle.close;
-        const jakartaTime = dayjs.unix(globalLastTime).tz('Asia/Jakarta').format('DD/MM/YYYY HH:mm:ss');
-        console.log(`🌏 Global last time updated: ${globalLastTime} (${jakartaTime} WIB)`);
-      }
-
-      // Broadcast to connected clients dengan global time info
-      broadcastToClients(timeframe, candle);
-
-      // Update cache if needed
-      if (dataCache[timeframe] && dataCache[timeframe].length > 0) {
-        const lastCandle = dataCache[timeframe][dataCache[timeframe].length - 1];
-
-        if (lastCandle && candle.time === lastCandle.time) {
-          // Update existing candle
-          console.log(`🔄 ${timeframe} - Updating existing candle at ${candle.time}`);
-          Object.assign(lastCandle, {
-            open: candle.open,
-            high: candle.high,
-            low: candle.low,
-            close: candle.close,
-            volume: candle.volume,
-          });
-        } else if (candle.time > lastCandle.time) {
-          // Add new candle
-          console.log(`➕ ${timeframe} - Adding new candle at ${candle.time}`);
-          dataCache[timeframe].push({
-            ...candle,
-            sma5: null, // Will be recalculated if needed
-            sma20: null,
-            ema20: null,
-            rsi: null,
-          });
-
-          // Keep cache size reasonable (keep last 1000 candles)
-          if (dataCache[timeframe].length > 1000) {
-            dataCache[timeframe] = dataCache[timeframe].slice(-1000);
-          }
-        }
+      if (candleData.isTickerUpdate) {
+        // Handle ticker price update
+        handleTickerUpdate(candleData);
+      } else {
+        // Handle kline candle update
+        handleCandleUpdate(timeframe, candleData);
       }
     });
   });

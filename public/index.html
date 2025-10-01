@@ -281,6 +281,7 @@
           this.rsiSeries = null;
           this.rsiOverboughtLine = null;
           this.rsiOversoldLine = null;
+          this.lastPriceLine = null; // TradingView-style last price line
           this.websocket = null;
 
           // Current state
@@ -291,6 +292,7 @@
           this.candleData = [];
           this.reconnectAttempts = 0;
           this.maxReconnectAttempts = 5;
+          this.lastPrice = null;
 
           // Initialize
           this.initializeCharts();
@@ -330,16 +332,16 @@
               },
               localization: {
                 timeFormatter: (time) => {
-                  return new Date(time * 1000).toLocaleString('id-ID', {
-                    timeZone: 'Asia/Jakarta',
-                    day: '2-digit',
-                    month: '2-digit',
-                    year: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
+                  return new Date(time * 1000).toLocaleString("id-ID", {
+                    timeZone: "Asia/Jakarta",
+                    day: "2-digit",
+                    month: "2-digit",
+                    year: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
                   });
-                }
-              }
+                },
+              },
             }
           );
 
@@ -369,16 +371,16 @@
             },
             localization: {
               timeFormatter: (time) => {
-                return new Date(time * 1000).toLocaleString('id-ID', {
-                  timeZone: 'Asia/Jakarta',
-                  day: '2-digit',
-                  month: '2-digit',
-                  year: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit'
+                return new Date(time * 1000).toLocaleString("id-ID", {
+                  timeZone: "Asia/Jakarta",
+                  day: "2-digit",
+                  month: "2-digit",
+                  year: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
                 });
-              }
-            }
+              },
+            },
           });
 
           // Candlestick series
@@ -388,6 +390,21 @@
             borderVisible: false,
             wickUpColor: "#26a69a",
             wickDownColor: "#ef5350",
+          });
+
+          // Initialize last price line (TradingView-style)
+          this.lastPriceLine = this.candlestickChart.addLineSeries({
+            color: "#f7931a", // Bitcoin orange
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Solid,
+            crosshairMarkerVisible: false,
+            priceLineVisible: true,
+            lastValueVisible: true,
+            priceFormat: {
+              type: "price",
+              precision: 2,
+              minMove: 0.01,
+            },
           });
 
           // Handle window resize
@@ -488,9 +505,10 @@
             throw new Error("Invalid data format");
           }
 
-          // Store global last time info
+          // Store global info
           this.globalLastTime = data.globalLastTime;
           this.globalLastTimeJakarta = data.globalLastTimeJakarta;
+          this.globalLastPrice = data.globalLastPrice;
 
           // Convert data to format expected by Lightweight Charts (UNIX seconds)
           const allCandles = data.candles
@@ -511,61 +529,54 @@
             }))
             .sort((a, b) => a.time - b.time);
 
-          // For timeframes other than 1d, load only recent data
+          // For timeframes other than 1d, load only recent data for performance
           let candleData;
           if (this.currentTimeframe === "1d") {
             // Full historical data for daily
             candleData = allCandles;
           } else {
-            // Last 500 candles for intraday
-            candleData = allCandles.slice(-500);
-          }
-
-          // Sync with globalLastTime if needed
-          if (this.globalLastTime && candleData.length > 0) {
-            const lastCandle = candleData[candleData.length - 1];
-            
-            if (lastCandle.time < this.globalLastTime) {
-              // Add dummy candle to align with global last time
-              const dummyCandle = {
-                time: this.globalLastTime,
-                open: lastCandle.close,
-                high: lastCandle.close,
-                low: lastCandle.close,
-                close: lastCandle.close,
-              };
-              candleData.push(dummyCandle);
-              
-              console.log(`🔄 Frontend aligned last candle for TF=${this.currentTimeframe} at time=${this.globalLastTime} (${this.globalLastTimeJakarta} WIB)`);
-            }
+            // Last 1000 candles for intraday
+            candleData = allCandles.slice(-1000);
           }
 
           this.candleData = candleData;
           this.rawData = data;
 
-          // Debug log untuk membandingkan dengan backend
+          // Set last price from latest candle
+          if (candleData.length > 0) {
+            this.lastPrice =
+              this.globalLastPrice || candleData[candleData.length - 1].close;
+          }
+
+          // Debug log
           if (candleData.length > 0) {
             const lastCandle = candleData[candleData.length - 1];
-            const jakartaTime = new Date(lastCandle.time * 1000).toLocaleString('id-ID', {
-              timeZone: 'Asia/Jakarta',
-              day: '2-digit',
-              month: '2-digit',
-              year: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit'
-            });
-            
+            const jakartaTime = new Date(lastCandle.time * 1000).toLocaleString(
+              "id-ID",
+              {
+                timeZone: "Asia/Jakarta",
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              }
+            );
+
             console.log(`📊 Frontend - Last loaded candle:`, {
               time: lastCandle.time,
               close: lastCandle.close,
               jakartaTime: jakartaTime,
-              globalLastTime: this.globalLastTime,
-              isAligned: lastCandle.time === this.globalLastTime
+              globalLastPrice: this.globalLastPrice,
+              lastPrice: this.lastPrice,
             });
           }
 
           // Set data to chart
           this.candleSeries.setData(candleData);
+
+          // Update last price line
+          this.updateLastPriceLine();
 
           // Apply zoom strategy based on timeframe
           this.applyZoomStrategy();
@@ -574,29 +585,86 @@
           this.updateIndicators();
 
           console.log(
-            `📊 Loaded ${candleData.length} candles for ${this.currentTimeframe} (aligned to ${this.globalLastTimeJakarta} WIB)`
+            `📊 Loaded ${candleData.length} candles for ${this.currentTimeframe}`
           );
         }
 
-        applyZoomStrategy() {
-          // Reset zoom first
-          this.candlestickChart.timeScale().fitContent();
+        // TradingView-style last price line
+        updateLastPriceLine() {
+          if (!this.lastPrice || !this.candleData.length) return;
 
-          // For intraday timeframes, scroll to recent data
-          if (["1m", "5m", "1h"].includes(this.currentTimeframe)) {
-            setTimeout(() => {
-              this.candlestickChart.timeScale().scrollToRealTime();
-            }, 100);
+          // Create a horizontal line at the last price
+          const lastTime = this.candleData[this.candleData.length - 1].time;
+          const lineData = [{ time: lastTime, value: this.lastPrice }];
+
+          this.lastPriceLine.setData(lineData);
+
+          // Update the price line options to show current price
+          this.lastPriceLine.applyOptions({
+            priceLineVisible: true,
+            lastValueVisible: true,
+            title: `Last: $${this.lastPrice.toFixed(2)}`,
+          });
+        }
+
+        applyZoomStrategy() {
+          // Strategy based on timeframe for optimal viewing
+          switch (this.currentTimeframe) {
+            case "1m":
+              // For 1m, show last 100 candles and scroll to real-time
+              this.candlestickChart.timeScale().setVisibleLogicalRange({
+                from: Math.max(0, this.candleData.length - 100),
+                to: this.candleData.length - 1,
+              });
+              setTimeout(() => {
+                this.candlestickChart.timeScale().scrollToRealTime();
+              }, 100);
+              break;
+
+            case "5m":
+              // For 5m, show last 200 candles
+              this.candlestickChart.timeScale().setVisibleLogicalRange({
+                from: Math.max(0, this.candleData.length - 200),
+                to: this.candleData.length - 1,
+              });
+              setTimeout(() => {
+                this.candlestickChart.timeScale().scrollToRealTime();
+              }, 100);
+              break;
+
+            case "1h":
+              // For 1h, show last 168 candles (about 1 week)
+              this.candlestickChart.timeScale().setVisibleLogicalRange({
+                from: Math.max(0, this.candleData.length - 168),
+                to: this.candleData.length - 1,
+              });
+              break;
+
+            case "1d":
+            default:
+              // For 1d, fit all content initially, then scroll to recent
+              this.candlestickChart.timeScale().fitContent();
+              setTimeout(() => {
+                // Show last 365 days (1 year) for daily
+                this.candlestickChart.timeScale().setVisibleLogicalRange({
+                  from: Math.max(0, this.candleData.length - 365),
+                  to: this.candleData.length - 1,
+                });
+              }, 200);
+              break;
           }
 
           // Sync RSI chart timeScale if visible
           if (this.rsiChart && this.isRSIVisible()) {
-            this.rsiChart.timeScale().fitContent();
-            if (["1m", "5m", "1h"].includes(this.currentTimeframe)) {
-              setTimeout(() => {
-                this.rsiChart.timeScale().scrollToRealTime();
-              }, 100);
-            }
+            // Match the main chart's visible range
+            setTimeout(() => {
+              const visibleRange = this.candlestickChart
+                .timeScale()
+                .getVisibleLogicalRange();
+              if (visibleRange) {
+                this.rsiChart.timeScale().setVisibleLogicalRange(visibleRange);
+              }
+            }, 300);
           }
         }
 
@@ -772,10 +840,10 @@
 
           this.websocket.onmessage = (event) => {
             try {
-              const candle = JSON.parse(event.data);
-              if (candle.type === "connected") return; // Skip connection messages
+              const data = JSON.parse(event.data);
+              if (data.type === "connected") return; // Skip connection messages
 
-              this.updateRealtime(candle);
+              this.updateRealtime(data);
             } catch (error) {
               console.error("Error parsing WebSocket message:", error);
             }
@@ -813,68 +881,92 @@
           };
         }
 
-        updateRealtime(candle) {
-          if (!candle || !this.candleData.length || candle.type === 'connected') return;
+        // TradingView-like realtime updates
+        updateRealtime(data) {
+          if (!data || !this.candleData.length || data.type === "connected")
+            return;
 
-          // Update global time if received
-          if (candle.globalLastTime) {
-            this.globalLastTime = candle.globalLastTime;
-            this.globalLastTimeJakarta = candle.globalLastTimeJakarta;
+          // Update global price tracking
+          if (data.globalLastPrice) {
+            this.lastPrice = data.globalLastPrice;
+            this.updateLastPriceLine();
           }
 
           const newCandle = {
-            time: Number(candle.time),
-            open: parseFloat(candle.open),
-            high: parseFloat(candle.high),
-            low: parseFloat(candle.low),
-            close: parseFloat(candle.close),
+            time: Number(data.time),
+            open: parseFloat(data.open),
+            high: parseFloat(data.high),
+            low: parseFloat(data.low),
+            close: parseFloat(data.close),
           };
 
           const lastCandle = this.candleData[this.candleData.length - 1];
 
           // Format Jakarta time for logging
-          const jakartaTime = new Date(newCandle.time * 1000).toLocaleString('id-ID', {
-            timeZone: 'Asia/Jakarta',
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-          });
+          const jakartaTime = new Date(newCandle.time * 1000).toLocaleString(
+            "id-ID",
+            {
+              timeZone: "Asia/Jakarta",
+              day: "2-digit",
+              month: "2-digit",
+              year: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            }
+          );
 
-          // Debug log untuk membandingkan candle terakhir
-          console.log(`📊 Frontend - WebSocket received candle:`, {
-            time: newCandle.time,
-            close: newCandle.close,
-            jakartaTime: jakartaTime,
-            globalLastTime: this.globalLastTime
-          });
-
+          // TradingView-like behavior: running candles
           if (newCandle.time === lastCandle.time) {
-            // Update existing candle - replace in array and update chart
-            console.log(`🔄 Frontend - Updating existing candle at ${newCandle.time} (${jakartaTime} WIB)`);
+            // Update existing running candle
+            console.log(
+              `🔄 Frontend - Updating running candle at ${newCandle.time} (${jakartaTime} WIB)`
+            );
+
+            // Update in-place
             this.candleData[this.candleData.length - 1] = newCandle;
+
+            // Update chart with running candle
             this.candleSeries.update(newCandle);
+
+            // Update last price
+            this.lastPrice = newCandle.close;
+            this.updateLastPriceLine();
           } else if (newCandle.time > lastCandle.time) {
-            // Add new candle - append to array and update chart
-            console.log(`➕ Frontend - Adding new candle at ${newCandle.time} (${jakartaTime} WIB)`);
+            // New candle period started
+            console.log(
+              `➕ Frontend - New candle period started at ${newCandle.time} (${jakartaTime} WIB)`
+            );
             this.candleData.push(newCandle);
             this.candleSeries.update(newCandle);
 
-            // Align with global time if this candle is the new global last time
-            if (newCandle.time === this.globalLastTime) {
-              console.log(`🌏 Frontend aligned with global last time: ${this.globalLastTime} (${this.globalLastTimeJakarta} WIB)`);
-            }
+            // Update last price
+            this.lastPrice = newCandle.close;
+            this.updateLastPriceLine();
 
             // Keep array size reasonable for performance
             if (this.candleData.length > 1000) {
               this.candleData = this.candleData.slice(-1000);
-              // Jika array dipotong, reload seluruh data ke chart
+              // If array is trimmed, reload entire data to chart
               this.candleSeries.setData(this.candleData);
             }
+
+            // Auto-scroll for intraday timeframes
+            if (["1m", "5m", "1h"].includes(this.currentTimeframe)) {
+              setTimeout(() => {
+                this.candlestickChart.timeScale().scrollToRealTime();
+              }, 100);
+            }
           } else {
-            console.warn(`⚠️ Frontend - Received old candle (${newCandle.time}) vs current (${lastCandle.time})`);
+            console.warn(
+              `⚠️ Frontend - Received old candle (${newCandle.time}) vs current (${lastCandle.time})`
+            );
           }
+
+          // Update status with last price info
+          this.updateStatus(
+            `Connected - $${this.lastPrice?.toFixed(2) || "N/A"}`,
+            true
+          );
         }
 
         closeWebSocket() {
@@ -922,3 +1014,4 @@
     </script>
   </body>
 </html>
+```
