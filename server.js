@@ -50,48 +50,45 @@ let globalLastPrice = null;
 // WebSocket clients tracking
 const wsClients = new Map(); // Map<timeframe, Set<WebSocket>>
 
-// Current candle tracking for each timeframe
+// Current candle tracking for each timeframe with slot-based approach
 const currentCandles = new Map(); // Map<timeframe, candleData>
 
-// Helper function to get candle start time for timeframe
-function getCandleStartTime(timestamp, timeframe) {
-  const date = dayjs.unix(timestamp).tz("Asia/Jakarta");
+// Timeframe configurations in seconds
+const TIMEFRAME_SECONDS = {
+  "1m": 60,
+  "5m": 300,
+  "1h": 3600,
+  "1d": 86400,
+};
 
-  switch (timeframe) {
-    case "1m":
-      return date.startOf("minute").unix();
-    case "5m":
-      return date
-        .startOf("minute")
-        .subtract(date.minute() % 5, "minute")
-        .unix();
-    case "1h":
-      return date.startOf("hour").unix();
-    case "1d":
-      return date.startOf("day").unix();
-    default:
-      return timestamp;
-  }
+// Helper function to get timeframe size in seconds
+function getTimeframeSeconds(timeframe) {
+  return TIMEFRAME_SECONDS[timeframe] || 60;
+}
+
+// Helper function to calculate candle slot for timeframe
+function getCandleSlot(timestamp, timeframe) {
+  const timeframeSeconds = getTimeframeSeconds(timeframe);
+  return Math.floor(timestamp / timeframeSeconds);
+}
+
+// Helper function to get candle start time from slot
+function getCandleStartTimeFromSlot(slot, timeframe) {
+  const timeframeSeconds = getTimeframeSeconds(timeframe);
+  return slot * timeframeSeconds;
+}
+
+// Helper function to get candle start time for timeframe (legacy - kept for compatibility)
+function getCandleStartTime(timestamp, timeframe) {
+  const slot = getCandleSlot(timestamp, timeframe);
+  return getCandleStartTimeFromSlot(slot, timeframe);
 }
 
 // Helper function to get next candle start time
 function getNextCandleStartTime(timestamp, timeframe) {
-  const date = dayjs.unix(timestamp).tz("Asia/Jakarta");
-
-  switch (timeframe) {
-    case "1m":
-      return date.add(1, "minute").startOf("minute").unix();
-    case "5m":
-      const currentMinute = date.minute();
-      const nextFiveMinute = Math.ceil((currentMinute + 1) / 5) * 5;
-      return date.minute(nextFiveMinute).startOf("minute").unix();
-    case "1h":
-      return date.add(1, "hour").startOf("hour").unix();
-    case "1d":
-      return date.add(1, "day").startOf("day").unix();
-    default:
-      return timestamp + 60;
-  }
+  const currentSlot = getCandleSlot(timestamp, timeframe);
+  const nextSlot = currentSlot + 1;
+  return getCandleStartTimeFromSlot(nextSlot, timeframe);
 }
 
 // Fungsi untuk mendapatkan global last time dari ticker
@@ -493,57 +490,140 @@ function broadcastToClients(timeframe, data) {
   });
 }
 
-// Function to handle candle updates for a specific timeframe
+// Function to handle candle updates for a specific timeframe with slot-based logic
 function handleCandleUpdate(timeframe, candleData) {
-  if (!dataCache[timeframe]) return;
+  if (!dataCache[timeframe]) {
+    console.warn(`⚠️ No cache initialized for ${timeframe}`);
+    return;
+  }
 
-  const candleStartTime = getCandleStartTime(candleData.time, timeframe);
-  const currentCandle = currentCandles.get(timeframe);
+  const currentSlot = getCandleSlot(candleData.time, timeframe);
+  const candleStartTime = getCandleStartTimeFromSlot(currentSlot, timeframe);
 
   // Get ticker price for real-time updates
   const tickerPrice = getGlobalTickerPrice();
+  const currentTime = getGlobalTickerTime() || Math.floor(Date.now() / 1000);
 
-  if (currentCandle && candleStartTime === currentCandle.time) {
-    // Update existing candle
-    if (!candleData.isClosed && tickerPrice) {
-      // Use ticker price for running candle
-      currentCandle.close = tickerPrice;
-      currentCandle.high = Math.max(currentCandle.high, tickerPrice);
-      currentCandle.low = Math.min(currentCandle.low, tickerPrice);
-    } else {
-      // Use kline data for closed candle or when ticker unavailable
-      currentCandle.close = candleData.close;
-      currentCandle.high = Math.max(currentCandle.high, candleData.high);
-      currentCandle.low = Math.min(currentCandle.low, candleData.low);
+  // Use ticker price if available and candle is not closed
+  const effectivePrice =
+    !candleData.isClosed && tickerPrice ? tickerPrice : candleData.close;
+
+  // Get or initialize current candle for this timeframe
+  let currentCandle = currentCandles.get(timeframe);
+
+  if (!currentCandle) {
+    // Initialize from last candle in cache if available
+    const cacheData = dataCache[timeframe];
+    if (cacheData && cacheData.length > 0) {
+      const lastCachedCandle = cacheData[cacheData.length - 1];
+      const lastCachedSlot = getCandleSlot(lastCachedCandle.time, timeframe);
+
+      if (lastCachedSlot === currentSlot) {
+        // Use existing cached candle as current
+        currentCandle = {
+          time: lastCachedCandle.time,
+          open: lastCachedCandle.open,
+          high: lastCachedCandle.high,
+          low: lastCachedCandle.low,
+          close: lastCachedCandle.close,
+          volume: lastCachedCandle.volume || 0,
+        };
+      }
     }
+  }
 
-    console.log(
-      `🔄 ${timeframe} - Updated running candle: close=${currentCandle.close}, closed=${candleData.isClosed}`
-    );
+  if (currentCandle) {
+    const currentCandleSlot = getCandleSlot(currentCandle.time, timeframe);
 
-    // Broadcast the updated candle
-    broadcastToClients(timeframe, {
-      time: currentCandle.time,
-      open: currentCandle.open,
-      high: currentCandle.high,
-      low: currentCandle.low,
-      close: currentCandle.close,
-      volume: currentCandle.volume,
-      isClosed: candleData.isClosed || false,
-    });
+    if (currentCandleSlot === currentSlot) {
+      // Same slot - update existing running candle
+      currentCandle.high = Math.max(
+        currentCandle.high,
+        candleData.high,
+        effectivePrice
+      );
+      currentCandle.low = Math.min(
+        currentCandle.low,
+        candleData.low,
+        effectivePrice
+      );
+      currentCandle.close = effectivePrice;
+      currentCandle.volume =
+        (currentCandle.volume || 0) + (candleData.volume || 0);
+
+      // Update in cache to prevent duplicates
+      const cacheData = dataCache[timeframe];
+      if (cacheData && cacheData.length > 0) {
+        const lastCachedSlot = getCandleSlot(
+          cacheData[cacheData.length - 1].time,
+          timeframe
+        );
+        if (lastCachedSlot === currentSlot) {
+          // Update existing cache entry
+          cacheData[cacheData.length - 1] = {
+            ...currentCandle,
+            sma5: cacheData[cacheData.length - 1].sma5,
+            sma20: cacheData[cacheData.length - 1].sma20,
+            ema20: cacheData[cacheData.length - 1].ema20,
+            rsi: cacheData[cacheData.length - 1].rsi,
+          };
+        }
+      }
+
+      const jakartaTime = dayjs
+        .unix(currentCandle.time)
+        .tz("Asia/Jakarta")
+        .format("DD/MM/YYYY HH:mm:ss");
+      console.log(
+        `🔄 ${timeframe} - Updated running candle: slot=${currentSlot}, time=${
+          currentCandle.time
+        } (${jakartaTime} WIB), close=${currentCandle.close.toFixed(
+          2
+        )}, closed=${candleData.isClosed || false}`
+      );
+    } else {
+      // Different slot - create new candle
+      const newCandle = {
+        time: candleStartTime,
+        open: currentCandle.close, // Use previous candle's close as open
+        high: Math.max(candleData.high, effectivePrice),
+        low: Math.min(candleData.low, effectivePrice),
+        close: effectivePrice,
+        volume: candleData.volume || 0,
+      };
+
+      // Add new candle to cache
+      dataCache[timeframe].push({
+        ...newCandle,
+        sma5: null,
+        sma20: null,
+        ema20: null,
+        rsi: null,
+      });
+
+      // Update current candle tracking
+      currentCandle = newCandle;
+
+      const jakartaTime = dayjs
+        .unix(newCandle.time)
+        .tz("Asia/Jakarta")
+        .format("DD/MM/YYYY HH:mm:ss");
+      console.log(
+        `➕ ${timeframe} - New candle: slot=${currentSlot}, time=${
+          newCandle.time
+        } (${jakartaTime} WIB), close=${newCandle.close.toFixed(2)}`
+      );
+    }
   } else {
-    // New candle period
+    // No current candle - create new one
     const newCandle = {
       time: candleStartTime,
-      open: currentCandle ? currentCandle.close : candleData.open,
-      high: tickerPrice || candleData.high,
-      low: tickerPrice || candleData.low,
-      close: tickerPrice || candleData.close,
+      open: candleData.open,
+      high: Math.max(candleData.high, effectivePrice),
+      low: Math.min(candleData.low, effectivePrice),
+      close: effectivePrice,
       volume: candleData.volume || 0,
     };
-
-    // Update current candle tracking
-    currentCandles.set(timeframe, newCandle);
 
     // Add to cache
     dataCache[timeframe].push({
@@ -554,42 +634,80 @@ function handleCandleUpdate(timeframe, candleData) {
       rsi: null,
     });
 
-    // Keep cache size reasonable
-    if (dataCache[timeframe].length > 1000) {
-      dataCache[timeframe] = dataCache[timeframe].slice(-1000);
-    }
+    currentCandle = newCandle;
 
     const jakartaTime = dayjs
-      .unix(candleStartTime)
+      .unix(newCandle.time)
       .tz("Asia/Jakarta")
       .format("DD/MM/YYYY HH:mm:ss");
     console.log(
-      `➕ ${timeframe} - New candle: ${candleStartTime} (${jakartaTime} WIB) close=${newCandle.close}`
+      `🆕 ${timeframe} - Created new candle: slot=${currentSlot}, time=${
+        newCandle.time
+      } (${jakartaTime} WIB), close=${newCandle.close.toFixed(2)}`
     );
-
-    // Broadcast the new candle
-    broadcastToClients(timeframe, {
-      ...newCandle,
-      isClosed: false,
-    });
   }
+
+  // Update current candle tracking
+  currentCandles.set(timeframe, currentCandle);
+
+  // Keep cache size reasonable
+  if (dataCache[timeframe].length > 1000) {
+    dataCache[timeframe] = dataCache[timeframe].slice(-1000);
+    console.log(`🗑️ ${timeframe} - Trimmed cache to 1000 candles`);
+  }
+
+  // Broadcast the current candle (running or new)
+  broadcastToClients(timeframe, {
+    time: currentCandle.time,
+    open: currentCandle.open,
+    high: currentCandle.high,
+    low: currentCandle.low,
+    close: currentCandle.close,
+    volume: currentCandle.volume,
+    isClosed: candleData.isClosed || false,
+    slot: currentSlot,
+  });
 }
 
-// Function to handle ticker price updates
+// Function to handle ticker price updates with slot-based logic
 function handleTickerUpdate(tickerData) {
   const timeframes = ["1m", "5m", "1h", "1d"];
 
   timeframes.forEach((timeframe) => {
-    if (!dataCache[timeframe] || !currentCandles.has(timeframe)) return;
+    if (!dataCache[timeframe] || dataCache[timeframe].length === 0) return;
 
     const currentCandle = currentCandles.get(timeframe);
-    const candleStartTime = getCandleStartTime(tickerData.time, timeframe);
+    if (!currentCandle) return;
 
-    if (candleStartTime === currentCandle.time) {
-      // Update current running candle with ticker price
+    const tickerSlot = getCandleSlot(tickerData.time, timeframe);
+    const currentCandleSlot = getCandleSlot(currentCandle.time, timeframe);
+
+    if (tickerSlot === currentCandleSlot) {
+      // Same slot - update current running candle with ticker price
+      const originalClose = currentCandle.close;
       currentCandle.close = tickerData.close;
       currentCandle.high = Math.max(currentCandle.high, tickerData.close);
       currentCandle.low = Math.min(currentCandle.low, tickerData.close);
+
+      // Update in cache
+      const cacheData = dataCache[timeframe];
+      if (cacheData && cacheData.length > 0) {
+        const lastCachedSlot = getCandleSlot(
+          cacheData[cacheData.length - 1].time,
+          timeframe
+        );
+        if (lastCachedSlot === currentCandleSlot) {
+          cacheData[cacheData.length - 1].close = currentCandle.close;
+          cacheData[cacheData.length - 1].high = currentCandle.high;
+          cacheData[cacheData.length - 1].low = currentCandle.low;
+        }
+      }
+
+      console.log(
+        `💰 ${timeframe} - Ticker update: slot=${tickerSlot}, ${originalClose.toFixed(
+          2
+        )} → ${tickerData.close.toFixed(2)}`
+      );
 
       // Broadcast ticker update
       broadcastToClients(timeframe, {
@@ -601,6 +719,56 @@ function handleTickerUpdate(tickerData) {
         volume: currentCandle.volume,
         isClosed: false,
         isTickerUpdate: true,
+        slot: currentCandleSlot,
+      });
+    } else if (tickerSlot > currentCandleSlot) {
+      // New slot - create new candle with ticker data
+      const newCandleStartTime = getCandleStartTimeFromSlot(
+        tickerSlot,
+        timeframe
+      );
+      const newCandle = {
+        time: newCandleStartTime,
+        open: currentCandle.close,
+        high: tickerData.close,
+        low: tickerData.close,
+        close: tickerData.close,
+        volume: 0,
+      };
+
+      // Add to cache
+      dataCache[timeframe].push({
+        ...newCandle,
+        sma5: null,
+        sma20: null,
+        ema20: null,
+        rsi: null,
+      });
+
+      // Update current candle tracking
+      currentCandles.set(timeframe, newCandle);
+
+      const jakartaTime = dayjs
+        .unix(newCandle.time)
+        .tz("Asia/Jakarta")
+        .format("DD/MM/YYYY HH:mm:ss");
+      console.log(
+        `🎯 ${timeframe} - New candle from ticker: slot=${tickerSlot}, time=${
+          newCandle.time
+        } (${jakartaTime} WIB), close=${newCandle.close.toFixed(2)}`
+      );
+
+      // Broadcast new candle
+      broadcastToClients(timeframe, {
+        time: newCandle.time,
+        open: newCandle.open,
+        high: newCandle.high,
+        low: newCandle.low,
+        close: newCandle.close,
+        volume: newCandle.volume,
+        isClosed: false,
+        isTickerUpdate: true,
+        slot: tickerSlot,
       });
     }
   });
