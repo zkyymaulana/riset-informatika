@@ -54,12 +54,10 @@ function combineSignals(index, signalsObj) {
     const lows = history.map((d) => d.low);
 
     console.log(
-      "📅 Data historis dari:",
+      "Data historis dari:",
       formatTime(history[0].time * 1000),
       "sampai",
-      formatTime(history[history.length - 1].time * 1000),
-      "Total candle:",
-      history.length
+      formatTime(history[history.length - 1].time * 1000)
     );
 
     // 2. Hitung indikator awal
@@ -94,7 +92,7 @@ function combineSignals(index, signalsObj) {
     );
     let psarSignals = generateParabolicSARSignals(closes, psar);
 
-    console.log("📊 Data 5 candle terakhir (OHLC):");
+    console.log("5 candle terakhir (OHLC):");
     history.slice(-5).forEach((d) => {
       console.log({
         date: formatTime(d.time * 1000),
@@ -198,38 +196,38 @@ function combineSignals(index, signalsObj) {
           psar: psarSignals,
         });
 
-        // console.log(
-        //   `   TF: ${interval.toUpperCase()} | 📅 ${formatToWIB(
-        //     time
-        //   )} | Close: ${close.toFixed(2)}\n` +
-        //     ` SMA5: ${sma5.at(-1)?.toFixed(2)} | SMA20: ${sma20
-        //       .at(-1)
-        //       ?.toFixed(2)} | EMA20: ${ema20.at(-1)?.toFixed(2)}\n` +
-        //     ` RSI: ${rsi14.at(-1)?.toFixed(2)} | Stoch %K: ${stochastic.k
-        //       .at(-1)
-        //       ?.toFixed(2)} | %D: ${stochastic.d
-        //       .at(-1)
-        //       ?.toFixed(2)} | StochRSI: ${stochRSI.at(-1)?.toFixed(2)}\n` +
-        //     ` MACD: ${macd.macd.at(-1)?.toFixed(4)} | Signal: ${macd.signal
-        //       .at(-1)
-        //       ?.toFixed(4)} | Hist: ${macd.histogram.at(-1)?.toFixed(4)}\n` +
-        //     ` BB Upper: ${bollinger.upper
-        //       .at(-1)
-        //       ?.toFixed(2)} | Mid: ${bollinger.middle
-        //       .at(-1)
-        //       ?.toFixed(2)} | Lower: ${bollinger.lower.at(-1)?.toFixed(2)}\n` +
-        //     ` PSAR: ${psar.at(-1)?.toFixed(2)}\n` +
-        //     ` 🔎 Signals → MA: ${maSignals.at(-1)} | RSI: ${rsiSignals.at(
-        //       -1
-        //     )} | Stoch: ${stochasticSignals.at(
-        //       -1
-        //     )} | StochRSI: ${stochRSISignals.at(-1)} | MACD: ${macdSignals.at(
-        //       -1
-        //     )} | BB: ${bollingerSignals.at(-1)} | PSAR: ${psarSignals.at(
-        //       -1
-        //     )}\n` +
-        //     ` ✅ Final Signal: ${finalSignal}`
-        // );
+        console.log(
+          `   TF: ${interval.toUpperCase()} | 📅 ${formatTime(
+            time * 1000
+          )} | Close: ${close.toFixed(2)}\n` +
+            ` SMA5: ${sma5.at(-1)?.toFixed(2)} | SMA20: ${sma20
+              .at(-1)
+              ?.toFixed(2)} | EMA20: ${ema20.at(-1)?.toFixed(2)}\n` +
+            ` RSI: ${rsi14.at(-1)?.toFixed(2)} | Stoch %K: ${stochastic.k
+              .at(-1)
+              ?.toFixed(2)} | %D: ${stochastic.d
+              .at(-1)
+              ?.toFixed(2)} | StochRSI: ${stochRSI.at(-1)?.toFixed(2)}\n` +
+            ` MACD: ${macd.macd.at(-1)?.toFixed(4)} | Signal: ${macd.signal
+              .at(-1)
+              ?.toFixed(4)} | Hist: ${macd.histogram.at(-1)?.toFixed(4)}\n` +
+            ` BB Upper: ${bollinger.upper
+              .at(-1)
+              ?.toFixed(2)} | Mid: ${bollinger.middle
+              .at(-1)
+              ?.toFixed(2)} | Lower: ${bollinger.lower.at(-1)?.toFixed(2)}\n` +
+            ` PSAR: ${psar.at(-1)?.toFixed(2)}\n` +
+            ` 🔎 Signals → MA: ${maSignals.at(-1)} | RSI: ${rsiSignals.at(
+              -1
+            )} | Stoch: ${stochasticSignals.at(
+              -1
+            )} | StochRSI: ${stochRSISignals.at(-1)} | MACD: ${macdSignals.at(
+              -1
+            )} | BB: ${bollingerSignals.at(-1)} | PSAR: ${psarSignals.at(
+              -1
+            )}\n` +
+            ` ✅ Final Signal: ${finalSignal}`
+        );
       }
     );
   } catch (err) {

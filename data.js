@@ -4,78 +4,129 @@ import { formatTime } from "./utils/formatTime.js";
 
 // ======================= REST API =======================
 export async function getHistorical(symbol, interval, startTime, endTime) {
+  if (interval !== "1d") {
+    console.warn(`API Coinbase hanya support di interval: ${interval}`);
+    return [];
+  }
+
+  // Convert symbol format
+  let coinbaseSymbol = symbol;
+  if (symbol === "BTCUSDT" || symbol === "BTCUSD") {
+    coinbaseSymbol = "BTC-USD";
+  }
+
   let allCandles = [];
-  let fetchStart = startTime;
-  let requestCount = 0;
+  let batchCount = 0;
+  let currentStart = startTime;
 
-  // console.log(
-  //   `🔄 Loading ${symbol} ${interval} data dari ${formatTime(
-  //     startTime
-  //   )} sampai ${formatTime(endTime)}`
-  // );
+  // Coinbase maksimal 300 candles per request
+  const maxCandlesPerBatch = 300;
+  const oneDayMs = 24 * 60 * 60 * 1000; // 1 hari dalam milliseconds
 
-  while (fetchStart < endTime) {
+  while (currentStart < endTime) {
     try {
-      requestCount++;
-      const res = await axios.get("https://api.binance.com/api/v3/klines", {
-        params: {
-          symbol,
-          interval,
-          limit: 1000,
-          startTime: fetchStart,
-          endTime: endTime,
-        },
-      });
+      batchCount++;
 
-      const candles = res.data.map((d) => ({
-        time: Math.floor(d[0] / 1000), // openTime (detik)
-        open: parseFloat(d[1]),
-        high: parseFloat(d[2]),
-        low: parseFloat(d[3]),
-        close: parseFloat(d[4]),
-        volume: parseFloat(d[5]),
-      }));
-
-      if (candles.length === 0) break;
-
-      allCandles = allCandles.concat(candles);
-
-      // lanjut batch berikut
-      fetchStart = res.data[res.data.length - 1][0] + 1;
-
-      if (fetchStart < endTime) {
-        await new Promise((r) => setTimeout(r, 300)); // rate limit safe
-      }
-    } catch (error) {
-      console.error(
-        `❌ Error fetching data (request #${requestCount}):`,
-        error.response?.data || error.message
+      // Hitung end time untuk batch ini (300 hari dari current start)
+      const batchEnd = Math.min(
+        currentStart + maxCandlesPerBatch * oneDayMs,
+        endTime
       );
 
-      // Log more details for debugging
-      if (error.response) {
+      // Ubah ke format ISO untuk API Coinbase
+      const startISO = new Date(currentStart).toISOString();
+      const endISO = new Date(batchEnd).toISOString();
+
+      const res = await axios.get(
+        `https://api.exchange.coinbase.com/products/${coinbaseSymbol}/candles`,
+        {
+          params: {
+            start: startISO,
+            end: endISO,
+            granularity: 86400, // 1 hari dalam detik
+          },
+        }
+      );
+
+      if (!res.data || !Array.isArray(res.data)) {
         console.error(
-          `Status: ${error.response.status}, Data:`,
-          error.response.data
+          `❌ Batch #${batchCount}: Invalid response format from Coinbase API`
         );
+        break;
       }
 
-      if (error.response && error.response.status === 429) {
-        console.log("⏳ Rate limit hit, waiting 2 seconds...");
-        await new Promise((r) => setTimeout(r, 2000));
-      } else if (error.response && error.response.status === 400) {
-        console.error("❌ Bad Request - Check symbol format and time range");
-        break; // Stop retrying on 400 errors
+      // Coinbase mengembalikan: [time, low, high, open, close, volume]
+      // Ubah format: { time, open, high, low, close, volume }
+      const batchCandles = res.data.map((data) => ({
+        time: data[0],
+        open: parseFloat(data[3]),
+        high: parseFloat(data[2]),
+        low: parseFloat(data[1]),
+        close: parseFloat(data[4]),
+        volume: parseFloat(data[5]),
+      }));
+
+      if (batchCandles.length > 0) {
+        const firstCandle = batchCandles[0];
+        const lastCandle = batchCandles[batchCandles.length - 1];
+
+        // console.log(
+        //   `✅ Batch #${batchCount}: ${
+        //     batchCandles.length
+        //   } candles loaded (${formatTime(
+        //     firstCandle.time * 1000
+        //   )} → ${formatTime(lastCandle.time * 1000)})`
+        // );
+
+        // tambah ke array utama
+        allCandles = allCandles.concat(batchCandles);
       } else {
-        await new Promise((r) => setTimeout(r, 1000));
+        console.log(`⚠️ Batch #${batchCount}: No data returned`);
       }
+
+      // Siapkan start time untuk batch berikutnya
+      currentStart = batchEnd + oneDayMs; // tambah 1 hari untuk menghindari overlap
+
+      // setelah 1 batch, lanjut ke batch berikutnya agar tidak terkena limit coin base
+      if (currentStart < endTime) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    } catch (error) {
+      console.error(error.response?.data || error.message);
     }
   }
 
-  console.log(
-    `✅ ${symbol} ${interval}: ${allCandles.length} candles loaded in ${requestCount} requests`
-  );
-  return allCandles;
+  // sort berdasarkan waktu ascending (terlama ke terbaru)
+  allCandles.sort((a, b) => a.time - b.time);
+
+  // hapus duplikat (jika ada overlap)
+  const uniqueCandles = [];
+  const seenTimes = new Set();
+
+  for (const candle of allCandles) {
+    if (!seenTimes.has(candle.time)) {
+      seenTimes.add(candle.time);
+      uniqueCandles.push(candle);
+    }
+  }
+
+  if (uniqueCandles.length > 0) {
+    const firstCandle = uniqueCandles[0];
+    const lastCandle = uniqueCandles[uniqueCandles.length - 1];
+
+    console.log(
+      `Total ${uniqueCandles.length} candles loaded in ${batchCount} requests.`
+    );
+    console.log(
+      `Data dari: ${formatTime(firstCandle.time * 1000)} - ${formatTime(
+        lastCandle.time * 1000
+      )}`
+    );
+  } else {
+    console.log(`No data loaded for ${coinbaseSymbol} ${interval}`);
+  }
+
+  return uniqueCandles;
 }
 
 // ======================= GLOBAL STATE =======================
