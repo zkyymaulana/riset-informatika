@@ -1,22 +1,22 @@
 import axios from "axios";
 import WebSocket from "ws";
+import { formatTime } from "./utils/formatTime.js";
 
+// ======================= REST API =======================
 export async function getHistorical(symbol, interval, startTime, endTime) {
-  // startTime dan endTime sekarang dalam ms timestamp
   let allCandles = [];
   let fetchStart = startTime;
   let requestCount = 0;
 
-  console.log(
-    `🔄 Loading ${symbol} ${interval} data from ${new Date(
-      startTime
-    ).toISOString()} to ${new Date(endTime).toISOString()}`
-  );
+  // console.log(
+  //   `🔄 Loading ${symbol} ${interval} data dari ${formatTime(
+  //     startTime
+  //   )} sampai ${formatTime(endTime)}`
+  // );
 
   while (fetchStart < endTime) {
     try {
       requestCount++;
-
       const res = await axios.get("https://api.binance.com/api/v3/klines", {
         params: {
           symbol,
@@ -28,7 +28,7 @@ export async function getHistorical(symbol, interval, startTime, endTime) {
       });
 
       const candles = res.data.map((d) => ({
-        time: Math.floor(d[0] / 1000), // Convert ms to seconds for lightweight-charts
+        time: Math.floor(d[0] / 1000), // openTime (detik)
         open: parseFloat(d[1]),
         high: parseFloat(d[2]),
         low: parseFloat(d[3]),
@@ -36,27 +36,36 @@ export async function getHistorical(symbol, interval, startTime, endTime) {
         volume: parseFloat(d[5]),
       }));
 
-      if (candles.length === 0) {
-        break;
-      }
+      if (candles.length === 0) break;
 
       allCandles = allCandles.concat(candles);
 
-      // Move to next batch: last candle time (in ms) + 1ms
+      // lanjut batch berikut
       fetchStart = res.data[res.data.length - 1][0] + 1;
 
-      // Rate limit protection
       if (fetchStart < endTime) {
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 300)); // rate limit safe
       }
     } catch (error) {
       console.error(
         `❌ Error fetching data (request #${requestCount}):`,
-        error.message
+        error.response?.data || error.message
       );
 
+      // Log more details for debugging
+      if (error.response) {
+        console.error(
+          `Status: ${error.response.status}, Data:`,
+          error.response.data
+        );
+      }
+
       if (error.response && error.response.status === 429) {
+        console.log("⏳ Rate limit hit, waiting 2 seconds...");
         await new Promise((r) => setTimeout(r, 2000));
+      } else if (error.response && error.response.status === 400) {
+        console.error("❌ Bad Request - Check symbol format and time range");
+        break; // Stop retrying on 400 errors
       } else {
         await new Promise((r) => setTimeout(r, 1000));
       }
@@ -69,33 +78,31 @@ export async function getHistorical(symbol, interval, startTime, endTime) {
   return allCandles;
 }
 
-// Global state for managing realtime data
+// ======================= GLOBAL STATE =======================
 let globalTickerPrice = null;
 let globalTickerTime = null;
-const activeConnections = new Map(); // Map<timeframe, WebSocket>
-const candleCallbacks = new Map(); // Map<timeframe, callback>
+const activeConnections = new Map(); // Map<symbol_interval, WebSocket>
+const candleCallbacks = new Map(); // Map<symbol_interval, callback>
 
-// WebSocket untuk realtime dengan ticker stream
+// ======================= KLINE STREAM =======================
 export function connectWebSocket(
-  symbol = "btcusdt",
+  symbol = "BTCUSDT",
   interval = "1m",
   onMessage
 ) {
   const connectionKey = `${symbol}_${interval}`;
 
-  // Close existing connection for this timeframe if any
+  // tutup koneksi lama kalau ada
   if (activeConnections.has(connectionKey)) {
     const existingWs = activeConnections.get(connectionKey);
     existingWs.close();
     activeConnections.delete(connectionKey);
   }
 
-  // Store callback for this timeframe
   candleCallbacks.set(connectionKey, onMessage);
 
-  // Create kline WebSocket connection
   const klineWs = new WebSocket(
-    `wss://stream.binance.com:9443/ws/${symbol}@kline_${interval}`
+    `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`
   );
 
   activeConnections.set(connectionKey, klineWs);
@@ -105,32 +112,28 @@ export function connectWebSocket(
       const data = JSON.parse(msg);
       if (data.k) {
         const kline = data.k;
+        const candleTime = kline.t ? Math.floor(kline.t / 1000) : null;
+        const eventTime = data.E ? Math.floor(data.E / 1000) : null;
+
         const candleData = {
-          time: Math.floor(kline.t / 1000), // Convert to seconds
+          time: eventTime ?? candleTime, // default pakai eventTime, fallback ke candleTime
+          candleTime,
+          eventTime,
           open: parseFloat(kline.o),
           high: parseFloat(kline.h),
           low: parseFloat(kline.l),
           close: parseFloat(kline.c),
           volume: parseFloat(kline.v),
-          isClosed: kline.x, // true when candle is closed/final
+          isClosed: kline.x,
           isRealtime: true,
         };
 
-        // For TradingView-like behavior: always update with latest ticker price if available
+        // update harga realtime dengan ticker stream
         if (globalTickerPrice && !candleData.isClosed) {
-          // Update current candle with latest ticker price
           candleData.close = globalTickerPrice;
-          // Update high/low if needed
           candleData.high = Math.max(candleData.high, globalTickerPrice);
           candleData.low = Math.min(candleData.low, globalTickerPrice);
         }
-
-        console.log(`📊 ${symbol}@${interval} - Kline data:`, {
-          time: candleData.time,
-          close: candleData.close,
-          isClosed: candleData.isClosed,
-          tickerPrice: globalTickerPrice,
-        });
 
         onMessage(candleData);
       }
@@ -153,7 +156,7 @@ export function connectWebSocket(
     console.log(`🔌 Kline WebSocket closed for ${symbol}@${interval}`);
     activeConnections.delete(connectionKey);
 
-    // Auto-reconnect after 5 seconds
+    // auto-reconnect
     setTimeout(() => {
       if (candleCallbacks.has(connectionKey)) {
         console.log(
@@ -167,23 +170,21 @@ export function connectWebSocket(
   return klineWs;
 }
 
-// Separate ticker stream connection for global price updates
-export function connectTickerStream(symbol = "btcusdt") {
+// ======================= TICKER STREAM =======================
+export function connectTickerStream(symbol = "BTCUSDT") {
   const tickerWs = new WebSocket(
-    `wss://stream.binance.com:9443/ws/${symbol}@ticker`
+    `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@miniTicker`
   );
 
   tickerWs.on("message", (msg) => {
     try {
       const data = JSON.parse(msg);
       if (data.c) {
-        // 'c' is the close price in ticker stream
         const newPrice = parseFloat(data.c);
-        const eventTime = parseInt(data.E); // Event time in ms
+        const eventTime = parseInt(data.E);
 
-        // Update global ticker state
         globalTickerPrice = newPrice;
-        globalTickerTime = Math.floor(eventTime / 1000); // Convert to seconds
+        globalTickerTime = Math.floor(eventTime / 1000);
 
         console.log(
           `💰 Ticker update: ${symbol} = ${newPrice} at ${new Date(
@@ -191,7 +192,6 @@ export function connectTickerStream(symbol = "btcusdt") {
           ).toISOString()}`
         );
 
-        // Broadcast ticker update to all active timeframe connections
         broadcastTickerToAllTimeframes(symbol, newPrice, globalTickerTime);
       }
     } catch (error) {
@@ -205,7 +205,6 @@ export function connectTickerStream(symbol = "btcusdt") {
 
   tickerWs.on("close", () => {
     console.log(`🔌 Ticker WebSocket closed for ${symbol}`);
-    // Auto-reconnect ticker stream
     setTimeout(() => {
       console.log(`🔄 Reconnecting ticker WebSocket for ${symbol}`);
       connectTickerStream(symbol);
@@ -215,36 +214,28 @@ export function connectTickerStream(symbol = "btcusdt") {
   return tickerWs;
 }
 
-// Helper function to broadcast ticker updates to all timeframes
+// ======================= BROADCAST =======================
 function broadcastTickerToAllTimeframes(symbol, price, time) {
-  const timeframes = ["1m", "5m", "1h", "1d"];
-
-  timeframes.forEach((interval) => {
-    const connectionKey = `${symbol}_${interval}`;
-    const callback = candleCallbacks.get(connectionKey);
-
-    if (callback) {
-      // Create a ticker update that can be used to update current candle
-      const tickerUpdate = {
-        time: time,
-        close: price,
-        isTickerUpdate: true,
-        interval: interval,
-      };
-
-      // Only call callback if we have an active connection
-      if (activeConnections.has(connectionKey)) {
+  for (const connectionKey of activeConnections.keys()) {
+    if (connectionKey.startsWith(symbol)) {
+      const callback = candleCallbacks.get(connectionKey);
+      if (callback) {
+        const tickerUpdate = {
+          time, // pakai eventTime dari ticker
+          close: price,
+          isTickerUpdate: true,
+          interval: connectionKey.split("_")[1],
+        };
         callback(tickerUpdate);
       }
     }
-  });
+  }
 }
 
-// Export getter for global ticker price
+// ======================= GETTER =======================
 export function getGlobalTickerPrice() {
   return globalTickerPrice;
 }
-
 export function getGlobalTickerTime() {
   return globalTickerTime;
 }

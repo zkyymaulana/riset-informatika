@@ -863,13 +863,13 @@ function initializeRealtimeConnections() {
 
   // Start ticker stream first
   console.log(`🔄 Starting ticker stream for BTCUSDT`);
-  connectTickerStream("btcusdt");
+  connectTickerStream("BTCUSDT");
 
   // Start kline streams for each timeframe
   timeframes.forEach((timeframe) => {
     console.log(`🔄 Starting kline stream for ${timeframe}`);
 
-    connectWebSocket("btcusdt", timeframe, (candleData) => {
+    connectWebSocket("BTCUSDT", timeframe, (candleData) => {
       if (candleData.isTickerUpdate) {
         // Handle ticker price update
         handleTickerUpdate(candleData);

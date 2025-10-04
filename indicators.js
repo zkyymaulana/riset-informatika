@@ -125,8 +125,8 @@ export function StochasticRSI(values, rsiPeriod = 14, stochPeriod = 14) {
 }
 
 // MACD manual - Moving Average Convergence Divergence
-// MACD Line = EMA(12) - EMA(26)
-// Signal Line = EMA(9) dari MACD Line
+// MACD Line = EMA(fastPeriod) - EMA(slowPeriod)
+// Signal Line = EMA(signalPeriod) dari MACD Line (hanya data valid)
 // Histogram = MACD Line - Signal Line
 export function MACD(
   values,
@@ -136,25 +136,33 @@ export function MACD(
 ) {
   const emaFast = EMA(values, fastPeriod);
   const emaSlow = EMA(values, slowPeriod);
-  const macdLine = Array(values.length).fill(null);
 
   // Hitung MACD Line
+  const macdLine = Array(values.length).fill(null);
   for (let i = 0; i < values.length; i++) {
-    if (emaFast[i] !== null && emaSlow[i] !== null) {
+    if (emaFast[i] != null && emaSlow[i] != null) {
       macdLine[i] = emaFast[i] - emaSlow[i];
     }
   }
 
-  // Hitung Signal Line (EMA dari MACD Line)
-  const signalLine = EMA(
-    macdLine.map((v) => v || 0),
-    signalPeriod
-  );
+  // Ambil data valid saja untuk Signal Line
+  const macdValid = macdLine.filter((v) => v != null);
+  const signalValid = EMA(macdValid, signalPeriod);
+
+  // Mapping signal back ke array penuh dengan null pada indeks invalid
+  const signalLine = Array(values.length).fill(null);
+  let sigIndex = 0;
+  for (let i = 0; i < values.length; i++) {
+    if (macdLine[i] != null) {
+      signalLine[i] = signalValid[sigIndex];
+      sigIndex++;
+    }
+  }
 
   // Hitung Histogram
   const histogram = Array(values.length).fill(null);
   for (let i = 0; i < values.length; i++) {
-    if (macdLine[i] !== null && signalLine[i] !== null) {
+    if (macdLine[i] != null && signalLine[i] != null) {
       histogram[i] = macdLine[i] - signalLine[i];
     }
   }
