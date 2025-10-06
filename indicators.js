@@ -1,10 +1,12 @@
-// SMA manual - Simple Moving Average
+// Simple Moving Average (SMA)
 export function SMA(values, period) {
   const out = Array(values.length).fill(null);
-  for (let t = period - 1; t < values.length; t++) {
-    let sum = 0;
-    for (let j = 0; j < period; j++) sum += values[t - j];
-    out[t] = sum / period;
+  let sum = 0;
+
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) sum -= values[i - period]; // keluarkan data terlama
+    if (i >= period - 1) out[i] = sum / period; // mulai dari bar ke-(period-1)
   }
   return out;
 }
@@ -73,7 +75,7 @@ export function StochasticOscillator(
     let lowestLow = Math.min(...lows.slice(i - kPeriod + 1, i + 1));
 
     if (highestHigh === lowestLow) {
-      kValues[i] = 50; // Hindari pembagian dengan nol
+      kValues[i] = 50; // Hindari pembagian nol
     } else {
       kValues[i] = ((closes[i] - lowestLow) / (highestHigh - lowestLow)) * 100;
     }
@@ -97,31 +99,57 @@ export function StochasticOscillator(
 
 // Stochastic RSI manual
 // StochRSI = (RSI - Lowest RSI) / (Highest RSI - Lowest RSI)
-export function StochasticRSI(values, rsiPeriod = 14, stochPeriod = 14) {
-  // Hitung RSI terlebih dahulu
+export function StochasticRSI(
+  values,
+  rsiPeriod = 14,
+  stochPeriod = 14,
+  kPeriod = 3,
+  dPeriod = 3
+) {
   const rsiValues = RSI(values, rsiPeriod);
   const stochRSI = Array(values.length).fill(null);
+  const kValues = Array(values.length).fill(null);
+  const dValues = Array(values.length).fill(null);
 
-  // Hitung Stochastic dari RSI
+  // Hitung nilai dasar StochRSI
   for (let i = rsiPeriod + stochPeriod - 2; i < values.length; i++) {
-    const rsiSlice = rsiValues
+    const slice = rsiValues
       .slice(i - stochPeriod + 1, i + 1)
       .filter((v) => v !== null);
+    const maxRSI = Math.max(...slice);
+    const minRSI = Math.min(...slice);
 
-    if (rsiSlice.length === stochPeriod) {
-      const highestRSI = Math.max(...rsiSlice);
-      const lowestRSI = Math.min(...rsiSlice);
+    stochRSI[i] =
+      maxRSI === minRSI
+        ? 50
+        : ((rsiValues[i] - minRSI) / (maxRSI - minRSI)) * 100;
+  }
 
-      if (highestRSI === lowestRSI) {
-        stochRSI[i] = 50; // Hindari pembagian dengan nol
-      } else {
-        stochRSI[i] =
-          ((rsiValues[i] - lowestRSI) / (highestRSI - lowestRSI)) * 100;
+  // Smoothing %K (3-period SMA dari StochRSI)
+  for (let i = 0; i < values.length; i++) {
+    if (i >= kPeriod - 1) {
+      const subset = stochRSI
+        .slice(i - kPeriod + 1, i + 1)
+        .filter((v) => v !== null);
+      if (subset.length === kPeriod) {
+        kValues[i] = subset.reduce((a, b) => a + b, 0) / kPeriod;
       }
     }
   }
 
-  return stochRSI;
+  // Smoothing %D (3-period SMA dari %K)
+  for (let i = 0; i < values.length; i++) {
+    if (i >= dPeriod - 1) {
+      const subset = kValues
+        .slice(i - dPeriod + 1, i + 1)
+        .filter((v) => v !== null);
+      if (subset.length === dPeriod) {
+        dValues[i] = subset.reduce((a, b) => a + b, 0) / dPeriod;
+      }
+    }
+  }
+
+  return { stochRSI, k: kValues, d: dValues };
 }
 
 // MACD manual - Moving Average Convergence Divergence
@@ -205,66 +233,114 @@ export function BollingerBands(values, period = 20, multiplier = 2) {
   };
 }
 
-// Parabolic SAR manual
+// Parabolic SAR manual - TradingView compatible (Welles Wilder's method)
 // SAR = SAR_prev + AF * (EP - SAR_prev)
-// AF = Acceleration Factor (mulai 0.02, maksimal 0.20)
+// AF = Acceleration Factor (mulai 0.02, increment 0.02, maksimal 0.20)
 // EP = Extreme Point (highest high untuk uptrend, lowest low untuk downtrend)
 export function ParabolicSAR(highs, lows, closes, step = 0.02, maxStep = 0.2) {
-  const sar = Array(closes.length).fill(null);
-  if (closes.length < 2) return sar;
+  const n = highs.length;
+  const sar = Array(n).fill(null);
 
-  let isUptrend = closes[1] > closes[0]; // Tentukan trend awal
-  let af = step; // Acceleration Factor
-  let ep = isUptrend
-    ? Math.max(highs[0], highs[1])
-    : Math.min(lows[0], lows[1]); // Extreme Point
+  if (n < 3) return sar;
 
-  // SAR awal
-  sar[0] = isUptrend
-    ? Math.min(lows[0], lows[1])
-    : Math.max(highs[0], highs[1]);
-  sar[1] = sar[0];
+  // === Inisialisasi berdasarkan 3 candle pertama (TradingView style) ===
+  // Tentukan arah trend awal berdasarkan close[2] vs close[1]
+  let isUptrend = closes[2] > closes[1];
 
-  for (let i = 2; i < closes.length; i++) {
-    // Hitung SAR baru
-    const newSAR = sar[i - 1] + af * (ep - sar[i - 1]);
+  let ep, prevSAR, af;
 
+  if (isUptrend) {
+    // Uptrend: EP = max high dari 3 candle pertama, SAR = min low dari 3 candle pertama
+    ep = Math.max(highs[0], highs[1], highs[2]);
+    prevSAR = Math.min(lows[0], lows[1], lows[2]);
+  } else {
+    // Downtrend: EP = min low dari 3 candle pertama, SAR = max high dari 3 candle pertama
+    ep = Math.min(lows[0], lows[1], lows[2]);
+    prevSAR = Math.max(highs[0], highs[1], highs[2]);
+  }
+
+  af = step;
+
+  // Set SAR untuk candle ke-3 (index 2) dengan rounding 2 desimal
+  sar[2] = Math.round(prevSAR * 100) / 100;
+
+  console.log(
+    `PSAR Init: SAR=${sar[2].toFixed(2)} | EP=${ep.toFixed(2)} | Trend=${
+      isUptrend ? "UP" : "DOWN"
+    }`
+  );
+
+  // === Loop utama mulai dari candle ke-4 (index 3) ===
+  for (let i = 3; i < n; i++) {
+    // Hitung SAR baru menggunakan rumus Wilder
+    let newSAR = prevSAR + af * (ep - prevSAR);
+
+    // Round ke 2 desimal setiap step (TradingView style)
+    newSAR = Math.round(newSAR * 100) / 100;
+
+    // Batasi SAR agar tidak melewati high/low 2 candle sebelumnya
     if (isUptrend) {
-      // Uptrend logic
-      sar[i] = Math.min(newSAR, lows[i - 1], lows[i - 2] || lows[i - 1]);
+      // Uptrend: SAR tidak boleh > low dari 2 bar sebelumnya
+      const lowLimit1 = lows[i - 1];
+      const lowLimit2 = lows[i - 2];
+      newSAR = Math.min(newSAR, lowLimit1, lowLimit2);
 
-      // Cek apakah trend berubah
-      if (lows[i] <= sar[i]) {
+      // Cek reversal: jika low[i] < SAR, flip ke downtrend
+      if (lows[i] < newSAR) {
+        // Reversal ke downtrend
         isUptrend = false;
-        sar[i] = ep; // SAR menjadi extreme point sebelumnya
+        newSAR = ep; // SAR = EP sebelumnya
+        ep = lows[i]; // EP baru = low[i]
         af = step; // Reset AF
-        ep = lows[i]; // EP menjadi low saat ini
       } else {
-        // Update EP dan AF jika ada high baru
+        // Masih uptrend, update EP dan AF jika ada high baru
         if (highs[i] > ep) {
           ep = highs[i];
           af = Math.min(af + step, maxStep);
         }
       }
     } else {
-      // Downtrend logic
-      sar[i] = Math.max(newSAR, highs[i - 1], highs[i - 2] || highs[i - 1]);
+      // Downtrend: SAR tidak boleh < high dari 2 bar sebelumnya
+      const highLimit1 = highs[i - 1];
+      const highLimit2 = highs[i - 2];
+      newSAR = Math.max(newSAR, highLimit1, highLimit2);
 
-      // Cek apakah trend berubah
-      if (highs[i] >= sar[i]) {
+      // Cek reversal: jika high[i] > SAR, flip ke uptrend
+      if (highs[i] > newSAR) {
+        // Reversal ke uptrend
         isUptrend = true;
-        sar[i] = ep; // SAR menjadi extreme point sebelumnya
+        newSAR = ep; // SAR = EP sebelumnya
+        ep = highs[i]; // EP baru = high[i]
         af = step; // Reset AF
-        ep = highs[i]; // EP menjadi high saat ini
       } else {
-        // Update EP dan AF jika ada low baru
+        // Masih downtrend, update EP dan AF jika ada low baru
         if (lows[i] < ep) {
           ep = lows[i];
           af = Math.min(af + step, maxStep);
         }
       }
     }
+
+    // Round final SAR ke 2 desimal
+    sar[i] = Math.round(newSAR * 100) / 100;
+    prevSAR = sar[i];
+
+    // Debug log untuk 5 candle terakhir
+    if (i >= n - 5) {
+      console.log(
+        `PSAR(${i}): ${sar[i].toFixed(2)} | AF=${af.toFixed(
+          2
+        )} | EP=${ep.toFixed(2)} | Trend=${isUptrend ? "UP" : "DOWN"}`
+      );
+    }
   }
+
+  // Log output terakhir
+  console.log(
+    `PSAR terakhir: ${sar.at(-1).toFixed(2)} | Trend=${
+      isUptrend ? "UP" : "DOWN"
+    }`
+  );
 
   return sar;
 }

@@ -134,7 +134,7 @@ async function calculateGlobalLastTime() {
     const startTime = Date.now() - 24 * 60 * 60 * 1000; // 1 hari
     const endTime = Date.now();
 
-    const candles1m = await getHistorical("BTCUSDT", "1m", startTime, endTime);
+    const candles1m = await getHistorical("BTCUSDT", "1d", startTime, endTime);
 
     if (candles1m && candles1m.length > 0) {
       const lastCandle = candles1m[candles1m.length - 1];

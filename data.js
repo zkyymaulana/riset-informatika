@@ -3,13 +3,54 @@ import WebSocket from "ws";
 import { formatTime } from "./utils/formatTime.js";
 
 // ======================= REST API =======================
-export async function getHistorical(symbol, interval, startTime, endTime) {
+
+// Helper function to get the end time of the last closed daily candle
+function getLastClosedDailyCandleEndTime() {
+  const now = new Date();
+  // Ambil jam UTC sekarang
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const date = now.getUTCDate();
+
+  // Tentukan waktu 00:00 UTC hari ini
+  const todayStartUTC = Date.UTC(year, month, date);
+
+  // Candle harian close setiap 00:00 UTC
+  // Jadi gunakan hari sebelumnya untuk memastikan datanya sudah complete
+  const lastClosedUTC = todayStartUTC - 24 * 60 * 60 * 1000;
+
+  const iso = new Date(lastClosedUTC).toISOString();
+  console.log(`📅 Mengambil data sampai candle daily terakhir: ${iso}`);
+  return lastClosedUTC;
+}
+
+export async function getHistorical(
+  symbol,
+  interval,
+  startTime,
+  endTime = null
+) {
+  // 1️⃣ Force timeframe to "1d"
   if (interval !== "1d") {
-    console.warn(`API Coinbase hanya support di interval: ${interval}`);
-    return [];
+    console.warn(
+      `⚠️ API Coinbase hanya support interval "1d". Interval "${interval}" diubah ke "1d" otomatis.`
+    );
+    interval = "1d";
   }
 
-  // Convert symbol format
+  console.log(`✅ Interval digunakan: ${interval}`);
+
+  // 2️⃣ Calculate endTime based on last closed daily candle (if not provided)
+  const lastClosedCandleEndTime = getLastClosedDailyCandleEndTime();
+
+  // Use provided endTime or automatically calculated one
+  const finalEndTime = endTime
+    ? Math.min(endTime, lastClosedCandleEndTime, Date.now())
+    : lastClosedCandleEndTime;
+
+  console.log(`📆 Data akhir: ${new Date(finalEndTime).toISOString()}`);
+
+  // Convert symbol format for Coinbase
   let coinbaseSymbol = symbol;
   if (symbol === "BTCUSDT" || symbol === "BTCUSD") {
     coinbaseSymbol = "BTC-USD";
@@ -23,14 +64,14 @@ export async function getHistorical(symbol, interval, startTime, endTime) {
   const maxCandlesPerBatch = 300;
   const oneDayMs = 24 * 60 * 60 * 1000; // 1 hari dalam milliseconds
 
-  while (currentStart < endTime) {
+  while (currentStart < finalEndTime) {
     try {
       batchCount++;
 
       // Hitung end time untuk batch ini (300 hari dari current start)
       const batchEnd = Math.min(
         currentStart + maxCandlesPerBatch * oneDayMs,
-        endTime
+        finalEndTime
       );
 
       // Ubah ke format ISO untuk API Coinbase
@@ -67,17 +108,6 @@ export async function getHistorical(symbol, interval, startTime, endTime) {
       }));
 
       if (batchCandles.length > 0) {
-        const firstCandle = batchCandles[0];
-        const lastCandle = batchCandles[batchCandles.length - 1];
-
-        // console.log(
-        //   `✅ Batch #${batchCount}: ${
-        //     batchCandles.length
-        //   } candles loaded (${formatTime(
-        //     firstCandle.time * 1000
-        //   )} → ${formatTime(lastCandle.time * 1000)})`
-        // );
-
         // tambah ke array utama
         allCandles = allCandles.concat(batchCandles);
       } else {
@@ -87,12 +117,21 @@ export async function getHistorical(symbol, interval, startTime, endTime) {
       // Siapkan start time untuk batch berikutnya
       currentStart = batchEnd + oneDayMs; // tambah 1 hari untuk menghindari overlap
 
-      // setelah 1 batch, lanjut ke batch berikutnya agar tidak terkena limit coin base
-      if (currentStart < endTime) {
+      // Delay untuk menghindari rate limit Coinbase (300ms antar request)
+      if (currentStart < finalEndTime) {
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
     } catch (error) {
-      console.error(error.response?.data || error.message);
+      console.error(
+        `❌ Batch #${batchCount} error:`,
+        error.response?.data || error.message
+      );
+
+      // Jika terjadi error, coba lanjutkan dengan batch berikutnya
+      currentStart += maxCandlesPerBatch * oneDayMs;
+
+      // Delay lebih lama jika ada error (1 detik)
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
 
@@ -110,23 +149,31 @@ export async function getHistorical(symbol, interval, startTime, endTime) {
     }
   }
 
-  if (uniqueCandles.length > 0) {
-    const firstCandle = uniqueCandles[0];
-    const lastCandle = uniqueCandles[uniqueCandles.length - 1];
+  // Filter hanya candle yang sudah close (waktu <= finalEndTime)
+  const closedCandles = uniqueCandles.filter(
+    (c) => c.time * 1000 <= finalEndTime
+  );
+
+  if (closedCandles.length > 0) {
+    const firstCandle = closedCandles[0];
+    const lastCandle = closedCandles[closedCandles.length - 1];
 
     console.log(
-      `Total ${uniqueCandles.length} candles loaded in ${batchCount} requests.`
+      `📊 Total ${closedCandles.length} candles loaded in ${batchCount} requests.`
     );
     console.log(
-      `Data dari: ${formatTime(firstCandle.time * 1000)} - ${formatTime(
+      `📅 Data dari: ${formatTime(firstCandle.time * 1000)} - ${formatTime(
         lastCandle.time * 1000
       )}`
     );
-  } else {
-    console.log(`No data loaded for ${coinbaseSymbol} ${interval}`);
+    console.log(
+      `🎯 Data berakhir pada: ${new Date(
+        finalEndTime
+      ).toISOString()} (${formatTime(finalEndTime)})`
+    );
   }
 
-  return uniqueCandles;
+  return closedCandles;
 }
 
 // ======================= GLOBAL STATE =======================
@@ -138,7 +185,7 @@ const candleCallbacks = new Map(); // Map<symbol_interval, callback>
 // ======================= KLINE STREAM =======================
 export function connectWebSocket(
   symbol = "BTCUSDT",
-  interval = "1m",
+  interval = "1d",
   onMessage
 ) {
   const connectionKey = `${symbol}_${interval}`;
