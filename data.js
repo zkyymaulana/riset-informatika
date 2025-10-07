@@ -19,26 +19,24 @@ function getLastClosedDailyCandleEndTime() {
   // Jadi gunakan hari sebelumnya untuk memastikan datanya sudah complete
   const lastClosedUTC = todayStartUTC - 24 * 60 * 60 * 1000;
 
-  const iso = new Date(lastClosedUTC).toISOString();
-  console.log(`📅 Mengambil data sampai candle daily terakhir: ${iso}`);
   return lastClosedUTC;
 }
 
 export async function getHistorical(
   symbol,
-  interval,
+  timeframe,
   startTime,
   endTime = null
 ) {
   // 1️⃣ Force timeframe to "1d"
-  if (interval !== "1d") {
+  if (timeframe !== "1d") {
     console.warn(
-      `⚠️ API Coinbase hanya support interval "1d". Interval "${interval}" diubah ke "1d" otomatis.`
+      `⚠️ API Coinbase hanya support timeframe "1d". timeframe "${timeframe}" diubah ke "1d" otomatis.`
     );
-    interval = "1d";
+    timeframe = "1d";
   }
 
-  console.log(`✅ Interval digunakan: ${interval}`);
+  console.log(`Timeframe digunakan: ${timeframe}`);
 
   // 2️⃣ Calculate endTime based on last closed daily candle (if not provided)
   const lastClosedCandleEndTime = getLastClosedDailyCandleEndTime();
@@ -47,8 +45,6 @@ export async function getHistorical(
   const finalEndTime = endTime
     ? Math.min(endTime, lastClosedCandleEndTime, Date.now())
     : lastClosedCandleEndTime;
-
-  console.log(`📆 Data akhir: ${new Date(finalEndTime).toISOString()}`);
 
   // Convert symbol format for Coinbase
   let coinbaseSymbol = symbol;
@@ -166,11 +162,6 @@ export async function getHistorical(
         lastCandle.time * 1000
       )}`
     );
-    console.log(
-      `🎯 Data berakhir pada: ${new Date(
-        finalEndTime
-      ).toISOString()} (${formatTime(finalEndTime)})`
-    );
   }
 
   return closedCandles;
@@ -179,16 +170,16 @@ export async function getHistorical(
 // ======================= GLOBAL STATE =======================
 let globalTickerPrice = null;
 let globalTickerTime = null;
-const activeConnections = new Map(); // Map<symbol_interval, WebSocket>
-const candleCallbacks = new Map(); // Map<symbol_interval, callback>
+const activeConnections = new Map(); // Map<symbol_timeframe, WebSocket>
+const candleCallbacks = new Map(); // Map<symbol_timeframe, callback>
 
 // ======================= KLINE STREAM =======================
 export function connectWebSocket(
   symbol = "BTCUSDT",
-  interval = "1d",
+  timeframe = "1d",
   onMessage
 ) {
-  const connectionKey = `${symbol}_${interval}`;
+  const connectionKey = `${symbol}_${timeframe}`;
 
   // tutup koneksi lama kalau ada
   if (activeConnections.has(connectionKey)) {
@@ -200,7 +191,7 @@ export function connectWebSocket(
   candleCallbacks.set(connectionKey, onMessage);
 
   const klineWs = new WebSocket(
-    `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`
+    `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${timeframe}`
   );
 
   activeConnections.set(connectionKey, klineWs);
@@ -237,7 +228,7 @@ export function connectWebSocket(
       }
     } catch (error) {
       console.error(
-        `❌ Error parsing kline message for ${symbol}@${interval}:`,
+        `❌ Error parsing kline message for ${symbol}@${timeframe}:`,
         error
       );
     }
@@ -245,22 +236,22 @@ export function connectWebSocket(
 
   klineWs.on("error", (error) => {
     console.error(
-      `❌ Kline WebSocket error for ${symbol}@${interval}:`,
+      `❌ Kline WebSocket error for ${symbol}@${timeframe}:`,
       error.message
     );
   });
 
   klineWs.on("close", () => {
-    console.log(`🔌 Kline WebSocket closed for ${symbol}@${interval}`);
+    console.log(`🔌 Kline WebSocket closed for ${symbol}@${timeframe}`);
     activeConnections.delete(connectionKey);
 
     // auto-reconnect
     setTimeout(() => {
       if (candleCallbacks.has(connectionKey)) {
         console.log(
-          `🔄 Reconnecting kline WebSocket for ${symbol}@${interval}`
+          `🔄 Reconnecting kline WebSocket for ${symbol}@${timeframe}`
         );
-        connectWebSocket(symbol, interval, candleCallbacks.get(connectionKey));
+        connectWebSocket(symbol, timeframe, candleCallbacks.get(connectionKey));
       }
     }, 5000);
   });
@@ -322,7 +313,7 @@ function broadcastTickerToAllTimeframes(symbol, price, time) {
           time, // pakai eventTime dari ticker
           close: price,
           isTickerUpdate: true,
-          interval: connectionKey.split("_")[1],
+          timeframe: connectionKey.split("_")[1],
         };
         callback(tickerUpdate);
       }

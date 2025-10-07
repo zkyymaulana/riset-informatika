@@ -264,12 +264,6 @@ export function ParabolicSAR(highs, lows, closes, step = 0.02, maxStep = 0.2) {
   // Set SAR untuk candle ke-3 (index 2) dengan rounding 2 desimal
   sar[2] = Math.round(prevSAR * 100) / 100;
 
-  console.log(
-    `PSAR Init: SAR=${sar[2].toFixed(2)} | EP=${ep.toFixed(2)} | Trend=${
-      isUptrend ? "UP" : "DOWN"
-    }`
-  );
-
   // === Loop utama mulai dari candle ke-4 (index 3) ===
   for (let i = 3; i < n; i++) {
     // Hitung SAR baru menggunakan rumus Wilder
@@ -324,23 +318,7 @@ export function ParabolicSAR(highs, lows, closes, step = 0.02, maxStep = 0.2) {
     // Round final SAR ke 2 desimal
     sar[i] = Math.round(newSAR * 100) / 100;
     prevSAR = sar[i];
-
-    // Debug log untuk 5 candle terakhir
-    if (i >= n - 5) {
-      console.log(
-        `PSAR(${i}): ${sar[i].toFixed(2)} | AF=${af.toFixed(
-          2
-        )} | EP=${ep.toFixed(2)} | Trend=${isUptrend ? "UP" : "DOWN"}`
-      );
-    }
   }
-
-  // Log output terakhir
-  console.log(
-    `PSAR terakhir: ${sar.at(-1).toFixed(2)} | Trend=${
-      isUptrend ? "UP" : "DOWN"
-    }`
-  );
 
   return sar;
 }

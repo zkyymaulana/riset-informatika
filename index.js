@@ -17,6 +17,8 @@ import {
   generateMACDSignals,
   generateBollingerBandsSignals,
   generateParabolicSARSignals,
+  performMultiIndicatorAnalysis,
+  getWeightedBreakdown,
 } from "./signals.js";
 import { formatTime } from "./utils/formatTime.js";
 import dayjs from "dayjs";
@@ -82,13 +84,8 @@ function analyzeMACross(sma20, sma50, closes) {
 // Main analysis function
 async function main() {
   try {
-    console.log("\n" + "=".repeat(60));
-    console.log("🚀 Memulai analisis End-of-Day (EOD)...");
-    console.log("=".repeat(60));
-
-    // 1. Tetapkan interval fix ke "1d"
-    const INTERVAL = "1d";
-    console.log(`✅ Interval digunakan: ${INTERVAL}`);
+    // 1. Tetapkan Timeframe fix ke "1d"
+    const Timeframe = "1d";
 
     // 2. Ambil data historis (hanya candle daily yang sudah close)
     const startTime = new Date("2020-10-01").getTime();
@@ -102,12 +99,10 @@ async function main() {
     );
     const endTime = todayUTC - 24 * 60 * 60 * 1000; // 1 hari sebelumnya
 
-    console.log(`🕐 Waktu sekarang (UTC): ${now.toISOString()}`);
-    console.log(
-      `📅 Candle terakhir yang diambil: ${new Date(endTime).toISOString()}`
-    );
+    console.log(`Waktu sekarang: ${formatTime(now.getTime())}`);
+    console.log(`Candle terakhir: ${formatTime(endTime)}`);
 
-    const history = await getHistorical("BTCUSDT", INTERVAL, startTime);
+    const history = await getHistorical("BTCUSDT", Timeframe, startTime);
 
     if (!history || history.length === 0) {
       console.error("❌ Tidak ada data historis!");
@@ -117,22 +112,14 @@ async function main() {
     // Filter hanya candle yang sudah close (waktu <= endTime)
     const closedCandles = history.filter((c) => c.time * 1000 <= endTime);
 
-    console.log(
-      `🔍 Filter: ${history.length} -> ${closedCandles.length} candle (hanya yang sudah close)`
-    );
-
     const closes = closedCandles.map((d) => d.close);
     const highs = closedCandles.map((d) => d.high);
     const lows = closedCandles.map((d) => d.low);
 
     if (closedCandles.length > 0) {
       const lastClosedCandle = closedCandles[closedCandles.length - 1];
-      const analysisDate = dayjs
-        .unix(lastClosedCandle.time)
-        .tz("Asia/Jakarta")
-        .format("DD MMMM YYYY");
 
-      console.log("📊 Candle terakhir yang sudah close:");
+      console.log("Candle terakhir yang sudah close:");
       console.log({
         date: formatTime(lastClosedCandle.time * 1000),
         open: lastClosedCandle.open,
@@ -175,7 +162,7 @@ async function main() {
     console.log("\n" + "=".repeat(50));
     console.log("📈 HASIL ANALISIS END-OF-DAY (EOD)");
     console.log("=".repeat(50));
-    console.log(`📅 Tanggal analisis: ${analysisDate}`);
+    console.log(`📅 Tanggal candle: ${analysisDate}`);
     console.log(`Close terakhir: $${initialMAAnalysis.close}`);
     console.log(
       `SMA20: $${initialMAAnalysis.sma20} | SMA50: $${initialMAAnalysis.sma50}`
@@ -184,14 +171,36 @@ async function main() {
       `Sinyal: ${initialMAAnalysis.signal} - ${initialMAAnalysis.message}`
     );
 
-    // 3. Generate sinyal untuk semua indikator
+    // 3. Prepare indicator data for multi-indicator analysis
+    const lastIndex = closes.length - 1;
+    const indicatorData = {
+      sma20: sma20[lastIndex],
+      sma50: sma50[lastIndex],
+      ema20: ema20[lastIndex],
+      rsi: rsi14[lastIndex],
+      stochK: stochastic.k[lastIndex],
+      stochD: stochastic.d[lastIndex],
+      stochRsiK: stochRSI.k[lastIndex],
+      stochRsiD: stochRSI.d[lastIndex],
+      macdLine: macd.macd[lastIndex],
+      macdSignal: macd.signal[lastIndex],
+      bbUpper: bollinger.upper[lastIndex],
+      bbLower: bollinger.lower[lastIndex],
+      psar: psar[lastIndex],
+      close: closes[lastIndex],
+    };
+
+    // 4. Perform multi-indicator analysis
+    const multiIndicatorResult = performMultiIndicatorAnalysis(indicatorData);
+
+    // 5. Legacy signal generation for backward compatibility
     let maSignals = generateMASignals(sma20, sma50);
     let rsiSignals = generateRSISignals(rsi14);
     let stochasticSignals = generateStochasticSignals(
       stochastic.k,
       stochastic.d
     );
-    let stochRSISignals = generateStochasticRSISignals(stochRSI);
+    let stochRSISignals = generateStochasticRSISignals(stochRSI.stochRSI);
     let macdSignals = generateMACDSignals(
       macd.macd,
       macd.signal,
@@ -204,34 +213,50 @@ async function main() {
     );
     let psarSignals = generateParabolicSARSignals(closes, psar);
 
-    // Combined signal for latest candle
-    const finalSignal = combineSignals(closes.length - 1, {
-      ma: maSignals,
-      rsi: rsiSignals,
-      stoch: stochasticSignals,
-      stochRSI: stochRSISignals,
-      macd: macdSignals,
-      bb: bollingerSignals,
-      psar: psarSignals,
-    });
+    // Generate final signals for all candles (legacy)
+    const finalSignals = Array(closes.length).fill(null);
+    for (let i = 0; i < closes.length; i++) {
+      finalSignals[i] = combineSignals(i, {
+        ma: maSignals,
+        rsi: rsiSignals,
+        stoch: stochasticSignals,
+        stochRSISignals,
+        macd: macdSignals,
+        bb: bollingerSignals,
+        psar: psarSignals,
+      });
+    }
+
+    // Combined signal for latest candle (legacy)
+    const finalSignal = finalSignals[closes.length - 1];
 
     console.log(`EMA20: $${ema20.at(-1)?.toFixed(2)}`);
-    console.log(`RSI(14): ${rsi14.at(-1)?.toFixed(2)}`);
+    console.log(
+      `RSI(14): ${rsi14.at(-1)?.toFixed(2)} | Signal: ${rsiSignals.at(-1)}`
+    );
+
     console.log(
       `Stochastic Oscillator %K: ${stochastic.k
         .at(-1)
-        ?.toFixed(2)} | %D: ${stochastic.d.at(-1)?.toFixed(2)}`
+        ?.toFixed(2)} | %D: ${stochastic.d
+        .at(-1)
+        ?.toFixed(2)} | Signal: ${stochasticSignals.at(-1)}`
     );
+
     console.log(
       `StochRSI RSI: ${stochRSI.stochRSI.at(-1)?.toFixed(2)} | %K: ${stochRSI.k
         .at(-1)
-        ?.toFixed(2)} | %D: ${stochRSI.d.at(-1)?.toFixed(2)}`
+        ?.toFixed(2)} | %D: ${stochRSI.d
+        .at(-1)
+        ?.toFixed(2)} | Signal: ${stochRSISignals.at(-1)}`
     );
 
     console.log(
       `MACD: ${macd.macd.at(-1)?.toFixed(2)} | Signal: ${macd.signal
         .at(-1)
-        ?.toFixed(2)} | Histogram: ${macd.histogram.at(-1)?.toFixed(2)}`
+        ?.toFixed(2)} | Histogram: ${macd.histogram
+        .at(-1)
+        ?.toFixed(2)} | Signal: ${macdSignals.at(-1)}`
     );
 
     console.log(
@@ -239,19 +264,23 @@ async function main() {
         .at(-1)
         ?.toFixed(2)} | Middle (SMA20): $${bollinger.middle
         .at(-1)
-        ?.toFixed(2)} | Lower: $${bollinger.lower.at(-1)?.toFixed(2)}`
+        ?.toFixed(2)} | Lower: $${bollinger.lower
+        .at(-1)
+        ?.toFixed(2)} | Signal: ${bollingerSignals.at(-1)}`
     );
 
-    console.log(`PSAR: $${psar.at(-1)?.toFixed(2)}`);
+    console.log(
+      `PSAR: $${psar.at(-1)?.toFixed(2)} | Signal: ${psarSignals.at(-1)}`
+    );
 
     console.log("\n📊 SINYAL GABUNGAN:");
     console.log(`Final Signal: ${finalSignal}`);
 
     console.log("\n" + "=".repeat(50));
     console.log("📊 Analisis ini berbasis End-of-Day (EOD).");
-    console.log(
-      "📊 Akan dijalankan ulang otomatis setiap hari pukul 07:05 WIB."
-    );
+    // console.log(
+    //   "📊 Akan dijalankan ulang otomatis setiap hari pukul 07:05 WIB."
+    // );
     console.log("=".repeat(50));
   } catch (err) {
     console.error("❌ Error di main():", err.message);
@@ -298,12 +327,7 @@ function scheduleNextRun() {
 
 // Start the EOD system
 (async () => {
-  console.log("🚀 Sistem EOD (End-of-Day) Analysis dimulai...");
-  console.log(
-    `🕐 Waktu saat ini: ${dayjs()
-      .tz("Asia/Jakarta")
-      .format("DD MMMM YYYY, HH:mm:ss")} WIB`
-  );
+  console.log("Analysis dimulai...");
 
   // Jalankan analisis pertama kali
   await main();
@@ -313,7 +337,7 @@ function scheduleNextRun() {
 
   // Keep the process running
   process.on("SIGINT", () => {
-    console.log("\n📊 Sistem EOD dihentikan. Terima kasih!");
+    console.log("\nSistem EOD dihentikan. Terima kasih!");
     process.exit(0);
   });
 })();
